@@ -25,11 +25,17 @@ In PowerShell, set these variables **in the terminal running the backend**, then
 ```powershell
 $env:AI_API_TOKEN = "your-test-key"
 $env:AI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
-$env:AI_MODEL = "gemini-3.8-flash"
+$env:AI_MODEL = "gemini-3.5-flash-lite"
 python server.py
 ```
 
 Create a project key in [Google AI Studio](https://aistudio.google.com/apikey). Never put the key in the chat UI, the public GitHub Pages demo, a commit, or the submission ZIP. The public Pages URL remains a no-token workflow preview; hosting the model-backed backend needs a server with the key set as a secret. The adapter also accepts other OpenAI-compatible chat completion APIs.
+
+### Deploy the model-backed demo
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/coconight01/sop-guided-claims-agent)
+
+The `render.yaml` Blueprint creates a Free Python web service, runs the tests during build, and prompts for `AI_API_TOKEN` as a secret. Sign in to Render, review the Free plan, and enter a **new** Gemini key in that prompt. Keep the key out of GitHub and the browser. The Free service can spin down after inactivity, so the first visit may take longer; sessions are in memory and may reset. See [Render's Free service limits](https://render.com/docs/free). The GitHub Pages link above remains the token-free preview.
 
 Docker:
 
