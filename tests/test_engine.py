@@ -59,7 +59,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_unknown_declared_name_is_captured_but_not_verified(self):
         answer = self.say("My name is John Doe and I need help with a claim.")
-        self.assertIn("1 identity detail", answer)
+        self.assertIn("two more details", answer)
         self.assertEqual(self.session.fields["name"], "John Doe")
         self.assertFalse(self.session.holder_id)
 
@@ -116,7 +116,7 @@ class WorkflowTests(unittest.TestCase):
     def test_post_process_skip(self):
         self.say("Margaret Chen DOB 1985-03-15, SSN last four 4472. Denied healthcare January claim.")
         self.say("That's all")
-        self.assertIn("won’t send", self.say("no"))
+        self.assertIn("won't send", self.say("no"))
         self.assertEqual(self.session.email_result, "")
 
     def test_foreign_claim_not_disclosed(self):
@@ -148,7 +148,7 @@ class WorkflowTests(unittest.TestCase):
     def test_denied_status_and_reason_are_not_repeated(self):
         self.say("Margaret Chen DOB 1985-03-15 SSN last four 4472. Denied healthcare January claim.")
         self.model.enabled = True
-        self.model._ask = lambda *_: '{"scope":"claim","topics":["status","denial_reason"],"emotion":"neutral"}'
+        self.model._ask = lambda *_, **__: '{"scope":"claim","topics":["status","denial_reason"],"emotion":"neutral"}'
         reply = self.say("What is the status and why?")
         self.assertEqual(reply.count("CL-2048"), 1)
         self.assertIn("denied because", reply)
@@ -156,7 +156,7 @@ class WorkflowTests(unittest.TestCase):
     def test_model_routes_once_per_case_turn_and_never_before_verification(self):
         calls = []
         self.model.enabled = True
-        self.model._ask = lambda system, user: calls.append((system, user)) or (
+        self.model._ask = lambda system, user, **_: calls.append((system, user)) or (
             '{"scope":"claim","topics":["denial_reason"],"emotion":"neutral"}'
         )
         self.say("I'm Margaret Chen and calling about a denied healthcare claim in January.")

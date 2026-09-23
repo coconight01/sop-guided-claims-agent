@@ -4,21 +4,18 @@ const $ = id => document.getElementById(id);
 let sessionId = sessionStorage.getItem("northstar-session") || "";
 let busy = false;
 let current = null;
+const fieldLabels = {name: "Full name", dob: "Date of birth", phone: "Phone", email: "Email", id_last4: "ID last four"};
 const demoCaller = "I’m the policyholder. My name is Margaret Chen, policy POL-9921. I’m calling about my denied healthcare claim from January. DOB is 1985-03-15, SSN last four is 4472.";
 
 function setTheme(theme) {
   const dark = theme === "dark";
   document.documentElement.dataset.theme = dark ? "dark" : "light";
-  $("themeToggle").textContent = dark ? "☀ Light mode" : "☾ Dark mode";
+  $("themeToggle").replaceChildren(dark ? "☀" : "☾", node("span", "", dark ? " Light mode" : " Dark mode"));
   $("themeToggle").setAttribute("aria-pressed", String(dark));
   $("themeToggle").setAttribute("aria-label", dark ? "Switch to light mode" : "Switch to dark mode");
   document.querySelector('meta[name="theme-color"]').content = dark ? "#25343b" : "#f4f7f3";
   try { localStorage.setItem("northstar-theme", theme); } catch {}
 }
-let savedTheme = "light";
-try { savedTheme = localStorage.getItem("northstar-theme") || "light"; } catch {}
-setTheme(savedTheme);
-$("themeToggle").addEventListener("click", () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
 
 function node(tag, className, text) {
   const el = document.createElement(tag);
@@ -26,6 +23,11 @@ function node(tag, className, text) {
   if (text !== undefined) el.textContent = text;
   return el;
 }
+
+let savedTheme = "light";
+try { savedTheme = localStorage.getItem("northstar-theme") || "light"; } catch {}
+setTheme(savedTheme);
+$("themeToggle").addEventListener("click", () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
 
 function addMessage(role, text) {
   const wrapper = node("div", `message ${role}`);
@@ -36,6 +38,20 @@ function addMessage(role, text) {
   wrapper.append(content);
   $("messages").append(wrapper);
   $("messages").scrollTop = $("messages").scrollHeight;
+}
+
+function chips(id, items) {
+  $(id).replaceChildren(...items.map(item => node("span", "chip", item)));
+}
+
+function quickActions(items) {
+  const actions = $("quickActions");
+  actions.replaceChildren(...items.map(([label, message]) => {
+    const button = node("button", "", label);
+    button.type = "button";
+    button.addEventListener("click", () => message ? send(message) : $("newChat").click());
+    return button;
+  }));
 }
 
 function render(state) {
@@ -54,8 +70,10 @@ function render(state) {
     return li;
   }));
   $("phasePill").textContent = state.human_transfer ? "Representative requested" : ["Identity check", "Finding your claim", "Claim review", "Summary choice"][Math.max(phaseIndex, 0)];
-  $("identitySignal").textContent = state.verified ? "Verified" : `${state.collected_fields.length} of 3 details shared`;
-  $("memorySignal").textContent = state.memory_saved ? "Noted" : "Waiting for details";
+  $("identitySignal").textContent = state.verified ? "Verified" : `${Math.min(state.collected_fields.length, 3)} of 3 details shared`;
+  chips("identityChips", (state.verified ? state.verified_fields : state.collected_fields).map(key => fieldLabels[key] || key));
+  $("memorySignal").textContent = state.claim ? state.claim.case_id : state.memory_saved ? "Noted for after verification" : "Waiting for details";
+  chips("memoryChips", state.claim ? [] : state.memory_tags || []);
   const card = $("caseCard");
   card.replaceChildren();
   if (state.claim) {
@@ -72,24 +90,15 @@ function render(state) {
     card.append(node("strong", "", "Claim details are protected"));
     card.append(node("p", "", "Share three matching identity details to open your record."));
   }
-  const actions = $("quickActions");
-  actions.replaceChildren();
-  if (state.phase === "VERIFY_ID" && !state.human_transfer) {
-    [["Try sample conversation", demoCaller], ["Why verify?", "Why do you need to verify my identity?"]].forEach(([label, message]) => {
-      const button = node("button", "", label);
-      button.type = "button";
-      button.addEventListener("click", () => send(message));
-      actions.append(button);
-    });
-  }
-  if (state.phase === "POST_PROCESS" && !state.closed && !state.human_transfer) {
-    [["Send email summary", "send it"], ["Skip email", "skip"]].forEach(([label, message]) => {
-      const button = node("button", "", label);
-      button.type = "button";
-      button.addEventListener("click", () => send(message));
-      actions.append(button);
-    });
-  }
+  if (state.human_transfer || state.closed) quickActions([["Start a new conversation", ""]]);
+  else if (state.phase === "VERIFY_ID") quickActions([["Try sample conversation", demoCaller], ["Why verify?", "Why do you need to verify my identity?"]]);
+  else if (state.phase === "RESOLVE_INTENT") quickActions([["Show my claims", "Which claims do I have?"]]);
+  else if (state.phase === "PROCESS_CASE") quickActions([
+    ...(state.claim?.status === "denied" ? [["Why was it denied?", "Why was it denied?"], ["What should I do next?", "What should I do next?"]] : [["What's the status?", "What's the status?"], ["Payment details", "How much was paid?"]]),
+    ["That's all", "That's all, thanks."],
+  ]);
+  else if (state.phase === "POST_PROCESS") quickActions([["Send email summary", "send it"], ["Skip email", "skip"]]);
+  else quickActions([]);
 }
 
 async function loadSession() {
@@ -114,6 +123,11 @@ async function send(message) {
   $("sendButton").disabled = true;
   $("messageInput").value = "";
   addMessage("user", message.trim());
+  const typing = node("div", "message assistant typing");
+  typing.append(node("div", "small-avatar", "N"), node("div", "bubble", "Typing…"));
+  typing.setAttribute("aria-label", "Claims support is typing");
+  $("messages").append(typing);
+  $("messages").scrollTop = $("messages").scrollHeight;
   try {
     let res = await fetch("/api/chat", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({session_id: sessionId, message})});
     if (res.status === 404) {
@@ -123,10 +137,12 @@ async function send(message) {
       res = await fetch("/api/chat", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({session_id: sessionId, message})});
     }
     const data = await res.json();
+    typing.remove();
     if (!res.ok) throw new Error(data.error || "Something went wrong");
     addMessage("assistant", data.reply);
     render(data.session);
   } catch (error) {
+    typing.remove();
     addMessage("assistant", `${error.message}. Try starting a new conversation.`);
   } finally {
     busy = false;

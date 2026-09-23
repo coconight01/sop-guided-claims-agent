@@ -14,15 +14,21 @@ from engine import ModelClient, Session, respond
 
 ROOT = Path(__file__).parent / "web"
 SESSIONS: dict[str, Session] = {}
-LOCK = threading.RLock()
+SESSION_LOCKS: dict[str, threading.Lock] = {}
+LOCK = threading.RLock()  # guards the session tables only; model calls run under a per-session lock
 MODEL = ModelClient()
 TTL = 60 * 60 * 4
 
 
 def new_session() -> tuple[str, Session]:
+    now = time.time()
+    for old in [k for k, v in SESSIONS.items() if now - v.updated_at > TTL]:
+        SESSIONS.pop(old, None)
+        SESSION_LOCKS.pop(old, None)
     sid = secrets.token_urlsafe(32)
     session = Session()
     SESSIONS[sid] = session
+    SESSION_LOCKS[sid] = threading.Lock()
     return sid, session
 
 
@@ -81,8 +87,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("Invalid session")
             if self.path == "/api/reset":
                 with LOCK:
-                    if sid in SESSIONS:
-                        del SESSIONS[sid]
+                    SESSIONS.pop(sid, None)
+                    SESSION_LOCKS.pop(sid, None)
                     sid, session = new_session()
                     return self.json_response(200, {"session_id": sid, "session": session.public()})
             text = data.get("message", "")
@@ -91,9 +97,11 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 if sid not in SESSIONS or time.time() - SESSIONS[sid].updated_at > TTL:
                     return self.json_response(404, {"error": "Session expired. Start a new chat."})
-                session = SESSIONS[sid]
+                session, session_lock = SESSIONS[sid], SESSION_LOCKS[sid]
+            with session_lock:
                 answer = respond(session, text, MODEL)
-                return self.json_response(200, {"reply": answer, "session": session.public()})
+                state = session.public()
+            return self.json_response(200, {"reply": answer, "session": state})
         except (ValueError, json.JSONDecodeError) as exc:
             return self.json_response(400, {"error": str(exc)})
 

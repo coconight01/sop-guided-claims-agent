@@ -13,18 +13,18 @@ class ModelBoundaryTests(unittest.TestCase):
         self.model.enabled = True
 
     def test_claim_choice_is_bounded(self):
-        self.model._ask = lambda *args: "CL-9999"
+        self.model._ask = lambda *args, **_: "CL-9999"
         self.assertEqual(self.model.select_claim("January", [{"case_id": "CL-2048"}]), "")
 
     def test_structured_route_rejects_unrecognized_values(self):
-        self.model._ask = lambda *args: '{"scope":"claim","topics":["approve_claim","denial_reason"],"emotion":"angry"}'
+        self.model._ask = lambda *args, **_: '{"scope":"claim","topics":["approve_claim","denial_reason"],"emotion":"angry"}'
         self.assertEqual(
             self.model.analyze_case("Why was it denied?"),
             {"scope": "claim", "topics": ["denial_reason"], "emotion": "neutral"},
         )
 
     def test_invalid_route_falls_back(self):
-        self.model._ask = lambda *args: "I think the claim should be approved"
+        self.model._ask = lambda *args, **_: "I think the claim should be approved"
         self.assertEqual(self.model.analyze_case("Why?"), {})
 
     def test_gemini_default_backup_does_not_need_new_render_setting(self):
