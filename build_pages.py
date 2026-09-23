@@ -1,5 +1,6 @@
 """Build a token-free GitHub Pages demo from the same Python SOP engine."""
 from pathlib import Path
+from hashlib import sha256
 import shutil
 
 ROOT = Path(__file__).parent
@@ -16,11 +17,13 @@ def build() -> None:
         shutil.copy2(source, fixtures / source.name)
     shutil.copy2(ROOT / "web" / "style.css", OUT / "style.css")
     html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
-    html = html.replace('href="/style.css"', 'href="style.css"')
+    css_revision = sha256((OUT / "style.css").read_bytes()).hexdigest()[:10]
+    app_revision = sha256((ROOT / "web" / "app.js").read_bytes()).hexdigest()[:10]
+    html = html.replace('href="/style.css"', f'href="style.css?v={css_revision}"')
     html = html.replace('<script src="/app.js" defer></script>',
         '<script src="https://cdn.jsdelivr.net/pyodide/v314.0.7/full/pyodide.js"></script>\n'
         '  <script src="demo-engine.js"></script>\n'
-        '  <script src="app.js" defer></script>')
+        f'  <script src="app.js?v={app_revision}" defer></script>')
     (OUT / "index.html").write_text(html, encoding="utf-8")
     app = (ROOT / "web" / "app.js").read_text(encoding="utf-8").replace("fetch(", "demoFetch(")
     (OUT / "app.js").write_text(app, encoding="utf-8")
