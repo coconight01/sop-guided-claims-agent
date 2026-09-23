@@ -8,7 +8,7 @@ from urllib import error, request
 TOPICS = {
     "denial_reason", "status", "documents", "submission_method",
     "submission_dispute", "submission_timing", "review_timing", "appeal", "payment",
-    "alternatives", "receipt_check", "document_detail", "next_steps", "outcome", "clarify",
+    "alternatives", "receipt_check", "document_detail", "next_steps", "outcome", "contact", "clarify",
 }
 EMOTIONS = {"neutral", "frustrated", "anxious", "confused"}
 
@@ -91,11 +91,15 @@ class ModelClient:
             "Questions about whether submitted files were received are receipt_check. "
             "Questions about document contents, acceptable scans, PDF format, or legibility are document_detail. "
             "'What do I do now' is next_steps; 'will it be approved' or 'will I get paid' is outcome. "
+            "Questions about contacting support or the claims office are contact and are in scope. "
             "A request about the caller's preferred form of address is part of the conversation, not unrelated. "
             "If the claim record cannot answer a question, choose clarify. "
             + ("Reply rules: two to four short sentences in a warm, plain customer-service voice. "
                "Use only facts from claim_facts and copy numbers, dates, and case IDs exactly. "
-               "If the facts do not answer the question, say so and offer a human representative. "
+               "If the facts do not answer the question, say so and offer a human representative; otherwise do not "
+               "offer one. Do not repeat facts from previous_assistant_reply unless asked, and do not restate the "
+               "case ID, claim type, or filing date unless the question is about them. If appeal_deadline_has_passed "
+               "is true, say the deadline has passed and never suggest the appeal is still open. "
                "Never promise approval, payment, or that documents were received. Never say you sent, "
                "submitted, updated, or escalated anything. If emotion is not neutral, acknowledge the feeling "
                "in a few words first. No names, greetings, markdown, brackets, or placeholders. "

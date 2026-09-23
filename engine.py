@@ -53,7 +53,8 @@ STATUS_CLUES = (("denied", r"denied|denial|deny|rejected|declined|turned down"),
 CLAIM_WORDS = (r"\bcl[- ]?\d{4}\b|\b(?:claims?|insurance|insured|policy|denial|denied|appeal|documents?|report|payment|paid|"
                r"verification|verify|identity|status|coverage|covered|deductible|reimburse\w*|submit\w*|summited|upload\w*|"
                r"adjuster|representative|pathology|portal|case|email|summary|missing|office note|net pay|net fee|"
-               r"dob|ssn|birth|phone|name)\b")
+               r"dob|ssn|birth|phone|name|car|auto|vehicle|accident|dental|dentist|medical|hospital|doctor|"
+               r"deadline|refund|money|bill|office|contact)\b")
 WEAK_REFERENCES = r"\b(?:that|this|it|them|those|next|you need|need from me|help me|what now|why)\b"
 OFF_TOPIC_RE = re.compile(
     r"reinforcement learning|\bwhat(?:'s| is) rl\b|^rl\??$|machine learning|\bweather\b|\brecipes?\b|\bbake\b|\bcook(?:ing)?\b|"
@@ -84,7 +85,7 @@ TOPIC_LABELS = {
     "submission_timing": "when to submit documents", "review_timing": "review timing",
     "appeal": "the appeal deadline", "payment": "payment amounts", "alternatives": "alternatives for hard-to-get documents",
     "receipt_check": "whether uploads were received", "document_detail": "document requirements",
-    "next_steps": "next steps", "outcome": "what to expect from the review",
+    "next_steps": "next steps", "outcome": "what to expect from the review", "contact": "how to reach support",
 }
 
 
@@ -112,6 +113,7 @@ class Session:
     preferred_name_pending: bool = False
     refusal_count: int = 0
     refused_fields: list[str] = field(default_factory=list)
+    name_parts: dict[str, str] = field(default_factory=dict)
     verify_failures: int = 0
     failed_snapshot: str = ""
     hint_acknowledged: bool = False
@@ -241,12 +243,28 @@ def extract_fields(text: str, session: Session) -> list[str]:
     name = declared_name(text)
     if name:
         session.fields["name"] = name
+    for part, pattern in (("first", r"\b(?:first|given) name(?: is|:)?\s+([a-z][a-z'-]+)"),
+                          ("last", r"\b(?:last|family|sur) ?name(?: is|:)?\s+([a-z][a-z'-]+)")):
+        m = re.search(pattern, low)
+        if m and m.group(1) not in NAME_STOP:
+            session.name_parts[part] = m.group(1).title()
+    if not name and session.name_parts:
+        if len(session.name_parts) == 2:
+            session.fields["name"] = f"{session.name_parts['first']} {session.name_parts['last']}"
+        else:
+            notes.append("name_part")
     email = EMAIL_RE.search(text)
     if email:
         session.fields["email"] = email.group(0)
     phone = PHONE_RE.search(scrubbed)
     if phone:
         session.fields["phone"] = phone.group(0)
+    partial_phone = re.search(r"\b(?:phone|cell|mobile|number)\b[^.,;]{0,25}?\b(?:ends? in|ending in|ending with|last (?:four|4)"
+                              r"(?: digits)?(?: (?:is|are))?)\s*:?\s*\d{3,4}\b", low)
+    if partial_phone and not phone:
+        notes.append("partial_phone")
+    if partial_phone:
+        low = low.replace(partial_phone.group(0), " ")
     cue = re.search(DOB_CUE, scrubbed, re.I)
     dob = parse_date(scrubbed[cue.end():cue.end() + 40]) if cue else ""
     if not dob and len(scrubbed.strip()) <= 32 and not re.search(r"claim|filed|since|from", low):
@@ -293,13 +311,20 @@ def verified_holder(session: Session) -> dict | None:
 
 # ---------------------------------------------------------------- conversation signals
 
+def shouting(text: str) -> bool:
+    """Mostly upper-case prose, not a couple of acronyms such as SSN or SYSTEM OVERRIDE."""
+    letters = [c for c in text if c.isalpha()]
+    return len(letters) >= 12 and sum(c.isupper() for c in letters) / len(letters) > 0.7
+
+
 def emotion_of(text: str) -> str:
     low = norm(text)
     if (re.search(r"ridiculous|angry|furious|unacceptable|frustrat|already told|upset|annoyed|useless|waste of (?:my )?time|"
                   r"\bstupid\b|terrible|awful|fed up|sick of|\bwtf\b|\bdamn\b|\bpissed\b|not satisfied|still waiting", low)
-            or text.count("!") >= 3 or len(re.findall(r"\b[A-Z]{4,}\b", text)) >= 2):
+            or text.count("!") >= 3 or shouting(text)):
         return "frustrated"
-    if re.search(r"worried|anxious|scared|stressed|afraid|overwhelmed|panic|can'?t afford|cannot afford|nervous|desperate", low):
+    if re.search(r"worried|anxious|scared|stressed|afraid|overwhelmed|panic|can'?t afford|cannot afford|nervous|desperate|"
+                 r"terrified|lose (?:my )?(?:house|home|job|apartment)|can'?t (?:sleep|breathe|cope)|please,? (?:just )?help", low):
         return "anxious"
     if re.search(r"confused|don'?t understand|do not understand|unclear|makes no sense|what does that mean|i'?m lost", low):
         return "confused"
@@ -350,18 +375,43 @@ def smalltalk(text: str) -> str:
     return ""
 
 
-def third_party_declaration(text: str) -> bool:
+RELATIVE = r"(?:mother|father|mom|dad|mum|wife|husband|spouse|partner|son|daughter|parent|grandma|grandmother|grandpa|grandfather|sister|brother|aunt|uncle|friend|client|patient|boss)"
+ROLE = r"(?:son|daughter|spouse|wife|husband|partner|caregiver|representative|lawyer|attorney|assistant|agent)"
+
+
+def caller_is_third_party(text: str) -> bool:
+    """The person typing says they are not the policyholder."""
     low = norm(text)
     return bool(
-        re.search(r"\b(?:calling|speaking)\s+on behalf of\b", low)
-        or re.search(r"\b(?:calling|speaking)\s+for\s+my\s+(?:mother|father|mom|dad|wife|husband|son|daughter|client|patient)\b", low)
-        or re.search(r"\bmy\s+(?:mother|father|mom|dad|wife|husband|son|daughter|client|patient)(?:'s)?\s+(?:claim|policy|dob|date of birth|ssn)\b", low)
-        or re.search(r"\b(?:his|her|their)\s+(?:claim|dob|date of birth|ssn|policy)\b", low)
-        or re.search(r"\b(?:i am|i'm|this is)\s+[^.!?]{0,50}?'s\s+(?:son|daughter|spouse|wife|husband|caregiver|representative|lawyer|attorney)\b", low)
-        or re.search(r"\b(?:i am|i'm|this is)\s+(?:his|her|their)\s+(?:son|daughter|spouse|wife|husband|caregiver|representative|lawyer|attorney)\b", low)
-        or re.search(r"\b(?:i am|i'm)\s+(?:a|the)\s+(?:son|daughter|spouse|wife|husband|caregiver|representative)\s+(?:for|of)\b", low)
-        or "power of attorney" in low
+        re.search(r"\b(?:calling|speaking|writing|typing|asking)\s+(?:on behalf of|for (?:her|him|them)\b)", low)
+        or re.search(r"\b(?:calling|speaking|writing|asking|here)\s+for\s+my\s+" + RELATIVE, low)
+        or re.search(r"\b(?:helping|assisting)\s+(?:out\s+)?my\s+" + RELATIVE, low)
+        or re.search(r"\b(?:i am|i'm|this is)\s+[^.!?]{0,50}?'s\s+" + ROLE + r"\b", low)
+        or re.search(r"\b(?:i am|i'm|this is)\s+(?:his|her|their)\s+" + ROLE + r"\b", low)
+        or re.search(r"\b(?:i am|i'm)\s+(?:a|the)\s+" + ROLE + r"\s+(?:for|of)\b", low)
+        or re.search(r"\b(?:she|he|they)(?:'s| is| are|'re) (?:right )?(?:here|next to me|with me|beside me)\b", low)
+        or re.search(r"\bhanded me the phone\b|\bon (?:her|his|their) behalf\b|\bpower of attorney\b", low)
     )
+
+
+def about_other_person(text: str) -> bool:
+    """The request concerns someone else's identity details or claim."""
+    low = norm(text)
+    return bool(
+        re.search(r"\bmy\s+" + RELATIVE + r"(?:'s)?\s+(?:claim|policy|case|dob|date of birth|ssn|birthday)\b", low)
+        or re.search(r"\b(?:his|her|their)\s+(?:claim|dob|date of birth|ssn|policy|birthday)\b", low)
+        or re.search(r"\bthat'?s my\s+" + RELATIVE + r"'?s\b", low)
+    )
+
+
+def third_party_declaration(text: str) -> bool:
+    return caller_is_third_party(text) or about_other_person(text)
+
+
+def other_holder_named(text: str, holder: dict) -> bool:
+    own = {norm(n) for n in [holder["name"], *holder.get("name_aliases", [])]}
+    return any(re.search(r"(?<!\w)" + re.escape(n) + r"(?!\w)", text, re.I)
+               for h in HOLDERS for n in [h["name"], *h.get("name_aliases", [])] if norm(n) not in own)
 
 
 def different_identity(text: str, holder: dict) -> bool:
@@ -431,9 +481,9 @@ def claim_clues(text: str) -> dict[str, str]:
     year = re.search(r"\b20\d{2}\b", low)
     if year:
         clues["year"] = year.group()
-    if re.search(r"\b(?:latest|most recent|newest|recent|last one|current one|new one)\b", low):
+    if re.search(r"\b(?:latest|most recent|newest|newer|recent|last one|current one|new one)\b", low):
         clues["order"] = "newest"
-    elif re.search(r"\b(?:oldest|older one|earliest|old one)\b", low):
+    elif re.search(r"\b(?:oldest|older|earliest|old one|previous one)\b", low):
         clues["order"] = "oldest"
     return clues
 
@@ -536,7 +586,8 @@ def select_case(s: Session, claim: dict) -> None:
 
 
 def resolve(s: Session, text: str, model: ModelClient, remembered: bool = False) -> str:
-    source = (s.intent_hint or text) if remembered else (text if local_topics(text) != ["clarify"] else s.pending_question or text)
+    source = (s.intent_hint or s.case_hint or text) if remembered else (
+        text if local_topics(text) != ["clarify"] else s.pending_question or text)
     selected, candidates = choose_claim(text, s, model)
     own = [c for c in CLAIMS if c["party_id"] == s.holder_id]
     if not selected:
@@ -552,7 +603,7 @@ def resolve(s: Session, text: str, model: ModelClient, remembered: bool = False)
         return lead + claim_list(candidates) + ". Which one would you like to discuss?"
     select_case(s, selected)
     s.pending_question = ""
-    if local_topics(source) == ["clarify"] and not model.enabled:
+    if local_topics(source) == ["clarify"] and (remembered or not model.enabled):
         answer = status_sentence(selected)
     else:
         answer, _ = case_response(s, selected, source, model)
@@ -593,12 +644,16 @@ def local_topics(text: str) -> list[str]:
         topics.append("outcome")
     elif any(x in low for x in ("paid", "payment", "reimburse", "amount", "dollar", "money", "how much", "owe", "$")):
         topics.append("payment")
-    if any(x in low for x in ("don't have", "do not have", "can't get", "cannot get", "alternative", "substitute", "instead")):
+    if any(x in low for x in ("don't have", "do not have", "can't get", "cannot get", "alternative", "substitute")) or (
+            "instead" in low and re.search(r"document|report|note|file|photo|estimate", low)):
         topics.append("alternatives")
     if re.search(r"\b(?:what (?:do|should|can) i do|what now|next steps?|what happens (?:now|next)|how (?:do|can) i fix|what can be done)\b", low):
         topics.append("next_steps")
     if any(x in low for x in ("status", "progress", "outcome", "update", "what's going on", "what is going on", "where is my", "where's my")):
         topics.append("status")
+    if re.search(r"\b(?:phone number|contact|call (?:you|someone|the office)|reach (?:you|someone|a person)|office hours|"
+                 r"mailing address|fax number)\b", low) and "submission_method" not in topics:
+        topics.append("contact")
     if "alternatives" in topics and "documents" in topics:
         topics.remove("documents")
     return topics[:3] or ["clarify"]
@@ -701,6 +756,9 @@ def topic_answer(claim: dict, topics: list[str], text: str = "") -> str:
                 parts.append(f"The record doesn't list anything you need to send for {cid}; it is still in progress.")
             else:
                 parts.append(f"{cid} is {claim['status']}, and the record shows nothing outstanding.")
+        elif topic == "contact":
+            parts.append("I don't have contact details for the claims office in this chat, so I won't guess a number "
+                         "or address. If you'd like, I can mark this conversation for a human representative.")
         elif topic == "document_detail" and docs:
             specific = matching_guidance(claim, text, "document_guidance")
             parts.extend(specific if len(specific) < len(docs) else [GUIDE["default_guidance"]["en"], *specific])
@@ -763,6 +821,13 @@ def grounded(reply: str, claim: dict, topics: list[str], facts: dict) -> bool:
         if re.search(r"\bi(?:'ve| have|'ll| will| just)? (?:sent|submitted|escalated|filed|updated|approved|scheduled|"
                      r"transferred|forwarded|emailed|reopened)\b", sentence):
             return False
+    if deadline_passed(claim):
+        deadline = date.fromisoformat(claim["appeal_deadline"])
+        for sentence in re.split(r"(?<=[.!?])\s+", reply.lower()):
+            names_deadline = {float(deadline.year), float(deadline.day)} <= numbers_in(sentence)
+            still_open = re.search(r"\b(?:can|could|may|still|able to)\b[^.]{0,30}\bappeal\b|\bappeal by\b", sentence)
+            if (names_deadline or still_open) and not re.search(r"passed|expired|\bpast\b|\bwas\b|ended|missed|no longer|n't|not", sentence):
+                return False
     low = reply.lower()
     docs = claim.get("documents_needed", [])
     if {"denial_reason", "documents"} & set(topics) and docs and not all(doc in low for doc in docs):
@@ -785,8 +850,8 @@ def case_response(session: Session, claim: dict, text: str, model: ModelClient) 
         topics, unrelated, from_model = fallback, False, "submission_dispute" in route.get("topics", [])
     else:
         topics = route.get("topics") or fallback
-        unrelated = route.get("scope") == "unrelated"
-        from_model = bool(route.get("topics"))
+        unrelated = route.get("scope") == "unrelated" and not re.search(CLAIM_WORDS, norm(text))
+        from_model = bool(route.get("topics")) and not (route.get("scope") == "unrelated")
     if unrelated:
         return "", True
     if "document_detail" in topics and "documents" in topics:
@@ -873,16 +938,19 @@ def requested_other_email(session: Session, text: str) -> bool:
     addresses = EMAIL_RE.findall(text)
     redirect = re.search(
         r"\b(?:to|at)\s+(?:my\s+)?(?:other|work|new|different|another|personal|second)\s+(?:email|address)\b"
-        r"|\bto\s+my\s+(?:wife|husband|son|daughter|representative|mom|dad|lawyer|friend)\b",
+        r"|\bto\s+my\s+(?:wife|husband|son|daughter|representative|mom|dad|lawyer|friend)\b"
+        r"|\bmy\s+(?:gmail|yahoo|hotmail|outlook|icloud|proton\w*|personal|work|office|other|new)(?:\s+(?:email|address|account|inbox))?\b",
         text, re.I,
     )
     return bool(redirect or any(address.lower() != holder["email"].lower() for address in addresses))
 
 
 def consent_decision(text: str) -> str:
-    low = norm(text).strip(" .!")
+    # A change of mind ("don't send it... actually yes send it") is decided by the last clause.
+    low = re.split(r"\b(?:actually|on second thought|wait|never ?mind|changed my mind)\b", norm(text))[-1].strip(" .!,")
     negative = re.search(r"\b(?:no|nope|nah|skip|don'?t|do not|not now|no need|not necessary|i'?m good|all set|pass)\b", low)
-    positive = re.search(r"\b(?:yes|yeah|yep|yup|sure|ok|okay|please|go ahead|do it|send|email it|email me)\b", low)
+    positive = re.search(r"\b(?:yes|yeah|yep|yup|sure|ok|okay|please|go ahead|do it|send|email it|email me|fine|"
+                         r"that works|on file|that one)\b", low)
     if negative and not positive:
         return "skip"
     if positive and not negative:
@@ -1005,7 +1073,8 @@ def verify_turn(s: Session, text: str, model: ModelClient) -> str:
                     "policy. " + so_far + " If you'd prefer, a human representative can help instead.")
         return (lead + "I can't skip this step, but I'm glad to keep it quick. " + so_far +
                 " Or just say \"representative\" and I'll hand this to a person.")
-    if re.search(r"\b(?:why|what for)\b", low) and re.search(r"verif|identity|details|information|need (?:that|this)", low):
+    if re.search(r"\bwhat for\b|\bwhy (?:do|does|should|would|must|is|are|the)\b[^.?!]{0,40}(?:verif|identity|details|"
+                 r"information|need (?:that|this|it)|ask)|\bwhy verif", low):
         return (lead + "Claim records can contain private health and payment information. I need three matching "
                 "identity details before opening one, which keeps anyone else from accessing your claim. You may choose "
                 "your full name, date of birth, phone, email, or ID last four digits; I can also route you to a human "
@@ -1036,10 +1105,16 @@ def verify_turn(s: Session, text: str, model: ModelClient) -> str:
         parts.append(f"Thanks, I've got your {join_words([FIELD_LABELS[k] for k in new])}.")
     if "full_ssn" in notes:
         parts.append("For your safety, I only need the last four digits of your SSN; please don't share the full number.")
+    if "partial_phone" in notes:
+        parts.append("For phone, I need the full number on your record, not just the last digits.")
+    if "name_part" in notes:
+        parts.append(f"Could you also share your {'last' if 'first' in s.name_parts else 'first'} name?")
+    if local_topics(text) != ["clarify"] or re.search(r"\b(?:was it|did (?:they|you)|is it|yes or no)\b", low):
+        parts.append("I can't share or confirm any claim details until you're verified.")
     if (s.case_hint or s.intent_hint) and (not s.hint_acknowledged or not had_hint):
         s.hint_acknowledged = True
         parts.append("I've noted what you're calling about, so you won't need to repeat it after verification.")
-    if s.policy_hint and not s.policy_note_given:
+    if s.policy_hint and (not s.policy_note_given or re.search(r"\b(?:three|3) (?:details|things|pieces)\b|that'?s (?:three|3)", low)):
         s.policy_note_given = True
         parts.append("Your policy number helps me find the record, but it doesn't count toward the three details.")
     if not s.fields:
@@ -1080,24 +1155,25 @@ def case_turn(s: Session, text: str, model: ModelClient) -> str:
         select_case(s, target)
         answer, _ = case_response(s, target, text, model)
         return "I found the claim you asked about. " + answer
-    kind = next((k for k, p in TYPE_CLUES if re.search(
-        r"\b(?:my|the|another|other|different|about)\s+(?:\w+\s+)?(?:" + p + r")\s+(?:claim|one)\b", low)), "")
     current = next(c for c in CLAIMS if c["case_id"] == s.case_id)
-    if kind and kind != current["case_type"]:
-        options = [c for c in own if c["case_type"] == kind]
-        if len(options) == 1:
-            select_case(s, options[0])
+    clues = claim_clues(without_identity(text))
+    if clues and (re.search(r"\bone\b|\bwhat about\b|\bhow about\b|\band the\b|\bswitch\b|\bother\b|\binstead\b", low)
+                  or ("type" in clues and re.search(r"\bclaim\b", low))):
+        s.candidate_ids = []
+        target, options = choose_claim(text, s, model)
+        if target and target["case_id"] != s.case_id:
+            select_case(s, target)
             if local_topics(text) == ["clarify"]:
-                return (f"I found {options[0]['case_id']}, your {kind} claim. {status_sentence(options[0])} "
-                        "What would you like to know about it?")
-            answer, _ = case_response(s, options[0], text, model)
-            return "I found the claim you asked about. " + answer
-        if not options:
-            return (f"I couldn't find {'that kind of' if kind == 'unsupported' else 'a ' + kind} claim under the verified policyholder's record. Your claims are: "
-                    + claim_list(own) + ".")
-        s.phase = "RESOLVE_INTENT"
-        s.candidate_ids = [c["case_id"] for c in options]
-        return "Which one do you mean? I can see: " + claim_list(options) + "."
+                return (f"Switching to {target['case_id']}, your {target['case_type']} claim filed "
+                        f"{fmt_date(target['created_at'])}. {status_sentence(target)} What would you like to know about it?")
+            answer, _ = case_response(s, target, text, model)
+            return f"Switching to {target['case_id']}. " + answer
+        if not target and not options:
+            return "I couldn't find a claim like that on your policy. Your claims are: " + claim_list(own) + "."
+        if not target and s.case_id not in [c["case_id"] for c in options]:
+            s.phase = "RESOLVE_INTENT"
+            s.candidate_ids = [c["case_id"] for c in options]
+            return "Which one do you mean? I can see: " + claim_list(options) + "."
     if smalltalk(text) == "ack":
         return f"Is there anything else about {s.case_id} I can help with, or shall we wrap up?"
     if scope_state(text) == "unsure_question" and not model.enabled:
@@ -1122,7 +1198,7 @@ def _respond(s: Session, text: str, model: ModelClient) -> str:
         re.search(r"\b(?:i am|i'm)\s+(?:not the (?:policyholder|claimant)|a different person)\b", low)
         or re.search(r"\b(?:i am|i'm)\s+not\s+" + re.escape(holder["name"].lower()) + r"\b", low)
     ))
-    if holder and (third_party_declaration(text) or identity_denial or different_identity(text, holder)):
+    if holder and (caller_is_third_party(text) or identity_denial or different_identity(text, holder)):
         s.human_transfer = True
         s.phase = "VERIFY_ID"
         s.holder_id = ""
@@ -1138,6 +1214,10 @@ def _respond(s: Session, text: str, model: ModelClient) -> str:
         s.turns.clear()
         return ("Thanks for clarifying. I can't continue discussing the verified policyholder's claim "
                 "with a different caller. A representative can check your authorization safely.")
+    if holder and (about_other_person(text) or other_holder_named(text, holder)):
+        return ("I can only discuss claims on your own policy record, so I can't share or look up someone else's claim. "
+                "The other policyholder can contact us directly, or a representative can check authorization. "
+                "Is there anything else about your own claims I can help with?")
     if s.holder_id:
         name = requested_name(text)
         if name:
@@ -1169,14 +1249,14 @@ def _respond(s: Session, text: str, model: ModelClient) -> str:
     if s.phase == "POST_PROCESS":
         if s.closed:
             return "This conversation is complete. You can start a new conversation for another claim."
+        if requested_other_email(s, text):
+            return ("For privacy, I can only send the summary to the email on the verified policyholder's record. "
+                    "Would you like me to send it there or skip?")
         question = local_topics(text) != ["clarify"] or re.search(r"\bCL[-\s]?\d{4}\b|\bclaims?\b", text, re.I)
         decision = "" if question else consent_decision(text)
         if decision == "skip":
             s.closed = True
             return "Understood. I won't send an email summary. Thank you for contacting claims support."
-        if requested_other_email(s, text):
-            return ("For privacy, I can only send the summary to the email on the verified policyholder's record. "
-                    "Would you like me to send it there or skip?")
         if decision == "send":
             s.closed = True
             return send_summary(s) + " Thank you for contacting claims support."
