@@ -21,10 +21,6 @@ def build() -> None:
         '<script src="https://cdn.jsdelivr.net/pyodide/v314.0.7/full/pyodide.js"></script>\n'
         '  <script src="demo-engine.js"></script>\n'
         '  <script src="app.js" defer></script>')
-    html = html.replace('Demo data only. Please do not enter real personal information.',
-        'Public browser demo · Synthetic data only · No API token is used or accepted here.')
-    html = html.replace('The AI model, when configured, helps interpret and phrase grounded responses.',
-        'This public demo runs the same Python SOP engine in your browser. The backend supports a server-side AI token when deployed separately.')
     (OUT / "index.html").write_text(html, encoding="utf-8")
     app = (ROOT / "web" / "app.js").read_text(encoding="utf-8").replace("fetch(", "demoFetch(")
     (OUT / "app.js").write_text(app, encoding="utf-8")

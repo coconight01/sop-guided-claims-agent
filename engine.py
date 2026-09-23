@@ -148,9 +148,9 @@ def verified_holder(session: Session) -> dict | None:
 
 def empathy(text: str) -> str:
     low = norm(text)
-    if any(x in low for x in ("ridiculous", "angry", "furious", "unacceptable", "frustrat", "already told")):
+    if any(x in low for x in ("ridiculous", "angry", "furious", "unacceptable", "frustrat", "already told", "upset", "annoyed")):
         return "I understand why this is frustrating. "
-    if any(x in low for x in ("worried", "anxious", "scared", "stressed", "afraid")):
+    if any(x in low for x in ("worried", "anxious", "scared", "stressed", "afraid", "overwhelmed")):
         return "I can hear that this is worrying. "
     if any(x in low for x in ("confused", "don't understand", "unclear")):
         return "I can help make this clearer. "
@@ -179,6 +179,21 @@ def detect_hint(text: str, session: Session) -> None:
             session.case_hint = text[:500]
 
 
+def model_safe_text(text: str) -> str:
+    """Remove identity fields before sending a caller utterance to an external model."""
+    text = re.sub(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", "[email]", text, flags=re.I)
+    text = re.sub(r"(?<!\d)(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}(?!\d)", "[phone]", text)
+    text = re.sub(r"\bPOL[-\s]?\d{4}\b", "[policy number]", text, flags=re.I)
+    text = re.sub(r"\b(?:ssn|social security|national id|id|last four|last 4|last4)\b.{0,30}?\b\d{4}\b", "[ID detail]", text, flags=re.I)
+    for holder in HOLDERS:
+        for name in [holder["name"], *holder.get("name_aliases", [])]:
+            text = re.sub(r"(?<!\w)" + re.escape(name) + r"(?!\w)", "[name]", text, flags=re.I)
+        text = text.replace(holder["dob"], "[date of birth]")
+        text = text.replace(holder["id_last4"], "[ID digits]")
+    text = re.sub(r"\b(?:19|20)\d\d[-/]\d\d?[-/]\d\d?\b", "[date]", text)
+    return text
+
+
 def choose_claim(text: str, session: Session, model: ModelClient) -> tuple[dict | None, list[dict]]:
     own = [c for c in CLAIMS if c["party_id"] == session.holder_id]
     full = norm(" ".join((session.case_hint, session.intent_hint, text)))
@@ -204,7 +219,7 @@ def choose_claim(text: str, session: Session, model: ModelClient) -> tuple[dict 
     if len(filtered) == 1:
         return filtered[0], filtered
     if len(filtered) > 1 and model.enabled:
-        choice = model.select_claim(full, [safe_claim(c) for c in filtered])
+        choice = model.select_claim(model_safe_text(full), [safe_claim(c) for c in filtered])
         if choice:
             match = next((c for c in filtered if c["case_id"] == choice), None)
             if match:
@@ -215,7 +230,7 @@ def choose_claim(text: str, session: Session, model: ModelClient) -> tuple[dict 
 def detect_intent(text: str, model: ModelClient) -> str:
     low = norm(text)
     if model.enabled:
-        result = model.classify_intent(text)
+        result = model.classify_intent(model_safe_text(text))
         if result:
             return result
     if any(x in low for x in ("why", "denied", "denial", "reason")):
@@ -266,7 +281,7 @@ def grounded_answer(claim: dict, text: str, intent: str, model: ModelClient) -> 
             parts.append(f"The file needs {doc_list}. What would you like to know about this claim?")
     answer = " ".join(dict.fromkeys(parts))
     if model.enabled:
-        rewritten = model.rephrase(text, answer)
+        rewritten = model.rephrase(model_safe_text(text), answer)
         if rewritten:
             answer = rewritten
     return answer
@@ -398,7 +413,7 @@ def _respond(s: Session, text: str, model: ModelClient) -> str:
                 return prefix + "I can email a summary of what we discussed, the claim status, and next steps. " + send_summary(s)
             return prefix + "Before we finish, would you like an email summary of what we discussed, the claim status, and next steps? You can say “send it” or “skip”."
         claim = next(c for c in CLAIMS if c["case_id"] == s.case_id)
-        return prefix + grounded_answer(claim, text, detect_intent(text, model), model) + " Is there anything else about this claim?"
+        return prefix + grounded_answer(claim, text, detect_intent(text, model), model)
     if s.phase == "POST_PROCESS":
         if s.closed:
             return "This conversation is complete. You can start a new chat for another claim."
@@ -411,7 +426,7 @@ def _respond(s: Session, text: str, model: ModelClient) -> str:
         if any(x in low for x in ("claim", "why", "how", "what", "when", "document", "status")):
             s.phase = "PROCESS_CASE"
             claim = next(c for c in CLAIMS if c["case_id"] == s.case_id)
-            return prefix + grounded_answer(claim, text, detect_intent(text, model), model) + " Anything else about the claim?"
+            return prefix + grounded_answer(claim, text, detect_intent(text, model), model)
         return "Would you like me to send the email summary, or skip it?"
     return "I can help with your insurance claim."
 

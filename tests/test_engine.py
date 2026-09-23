@@ -1,6 +1,6 @@
 import unittest
 
-from engine import Session, respond, summary
+from engine import Session, respond, summary, model_safe_text
 from llm import ModelClient
 
 
@@ -12,6 +12,13 @@ class WorkflowTests(unittest.TestCase):
 
     def say(self, text):
         return respond(self.session, text, self.model)
+
+    def test_external_model_text_omits_identity_fields(self):
+        text = "I'm Margaret Chen, policy POL-9921, DOB 1985-03-15, SSN last four 4472, email margaret.chen@example.com. My denied healthcare claim was in January."
+        safe = model_safe_text(text)
+        for private in ("Margaret Chen", "POL-9921", "1985-03-15", "4472", "margaret.chen@example.com"):
+            self.assertNotIn(private, safe)
+        self.assertIn("denied healthcare claim", safe)
 
     def test_full_demo_and_consent(self):
         first = self.say("I'm the policyholder Margaret Chen, policy POL-9921. My denied healthcare claim from January: DOB 1985-03-15, SSN last four 4472.")

@@ -16,6 +16,21 @@ Open <http://localhost:8080>. The demo works without a model token using determi
 
 In PowerShell, for example: `$env:AI_API_TOKEN="YOUR_TOKEN"; python server.py`. See `.env.example` for every optional variable. No package installation is required.
 
+### Try a free model
+
+A Google AI Studio Gemini API key can be used with the existing OpenAI-compatible adapter. Check the [current free-tier quota](https://ai.google.dev/gemini-api/docs/pricing) for your region and model. Free-tier inputs may be used to improve Google's products, so use only the synthetic sample claims here.
+
+In PowerShell, set these variables **in the terminal running the backend**, then start the server:
+
+```powershell
+$env:AI_API_TOKEN = "your-test-key"
+$env:AI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+$env:AI_MODEL = "gemini-3.8-flash"
+python server.py
+```
+
+Create a project key in [Google AI Studio](https://aistudio.google.com/apikey). Never put the key in the chat UI, the public GitHub Pages demo, a commit, or the submission ZIP. The public Pages URL remains a no-token workflow preview; hosting the model-backed backend needs a server with the key set as a secret. The adapter also accepts other OpenAI-compatible chat completion APIs.
+
 Docker:
 
 ```bash
