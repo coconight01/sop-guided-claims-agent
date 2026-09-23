@@ -145,6 +145,14 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("can't confirm", reply)
         self.assertEqual(self.session.phase, "PROCESS_CASE")
 
+    def test_denied_status_and_reason_are_not_repeated(self):
+        self.say("Margaret Chen DOB 1985-03-15 SSN last four 4472. Denied healthcare January claim.")
+        self.model.enabled = True
+        self.model._ask = lambda *_: '{"scope":"claim","topics":["status","denial_reason"],"emotion":"neutral"}'
+        reply = self.say("What is the status and why?")
+        self.assertEqual(reply.count("CL-2048"), 1)
+        self.assertIn("denied because", reply)
+
     def test_model_routes_once_per_case_turn_and_never_before_verification(self):
         calls = []
         self.model.enabled = True
@@ -186,6 +194,8 @@ class WorkflowTests(unittest.TestCase):
         answer = self.say("Actually my name is John Smith.")
         self.assertTrue(self.session.human_transfer)
         self.assertFalse(self.session.public()["verified"])
+        self.assertEqual(self.session.phase, "VERIFY_ID")
+        self.assertFalse(self.session.public()["memory_saved"])
         self.assertIsNone(self.session.public()["claim"])
         self.assertNotIn("pathology report", answer)
         self.assertNotIn("pathology report", self.say("Why was it denied?"))

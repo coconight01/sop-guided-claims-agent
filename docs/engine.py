@@ -405,6 +405,8 @@ def case_response(session: Session, claim: dict, text: str, model: ModelClient) 
         return "", True
     if "document_detail" in topics and "documents" in topics:
         topics = [topic for topic in topics if topic != "documents"]
+    if claim["status"] == "denied" and "denial_reason" in topics and "status" in topics:
+        topics = [topic for topic in topics if topic != "status"]
     emotion = route.get("emotion", "neutral")
     session.emotion = emotion
     session.intent = topics[0]
@@ -536,10 +538,14 @@ def _respond(s: Session, text: str, model: ModelClient) -> str:
     ))
     if holder and (third_party_declaration(text) or identity_denial or different_identity(text, holder)):
         s.human_transfer = True
+        s.phase = "VERIFY_ID"
         s.holder_id = ""
         s.case_id = ""
         s.discussed_case_ids.clear()
         s.fields.clear()
+        s.policy_hint = s.case_hint = s.intent_hint = ""
+        s.preferred_name = ""
+        s.preferred_name_pending = False
         s.email_preview = ""
         s.turns.clear()
         return ("Thanks for clarifying. I can't continue discussing the verified policyholder's claim "
