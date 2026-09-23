@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#101a27" />
+  <title>Northstar Claims · SOP Agent</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="rail">
+      <div class="brand"><div class="brand-mark">✳</div><div><strong>Northstar</strong><span>CLAIMS STUDIO</span></div></div>
+      <div class="rail-label">WORKFLOW</div>
+      <ol class="steps" id="steps"></ol>
+      <div class="rail-divider"></div>
+      <div class="rail-label">SESSION SIGNALS</div>
+      <div class="signal"><span>Identity</span><strong id="identitySignal">Awaiting verification</strong></div>
+      <div class="signal"><span>Earlier context</span><strong id="memorySignal">None saved</strong></div>
+      <div class="signal"><span>Answer source</span><strong>Fixture-backed claim record</strong></div>
+      <div class="rail-footer"><span class="live-dot"></span><span id="mode">Checking model mode…</span></div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar"><div><div class="eyebrow">INSURANCE SUPPORT DEMO</div><h1>Claims conversation</h1></div><button class="new-chat" id="newChat" type="button">↻ <span>New conversation</span></button></header>
+      <div class="main-grid">
+        <section class="conversation" aria-label="Chat conversation">
+          <div class="conversation-head"><div class="agent-avatar">N</div><div><strong>Claims support agent</strong><span><i class="online"></i> Ready to help · Guided by SOP</span></div><div class="phase-pill" id="phasePill">VERIFY ID</div></div>
+          <div class="messages" id="messages" aria-live="polite"></div>
+          <div class="composer-wrap"><div id="quickActions" class="quick-actions"></div><form id="chatForm" class="composer"><textarea id="messageInput" rows="1" maxlength="2000" placeholder="Type your message…" aria-label="Your message"></textarea><button id="sendButton" type="submit" aria-label="Send message">➤</button></form><div class="composer-note">Demo data only. Please do not enter real personal information.</div></div>
+        </section>
+        <aside class="context-panel"><div class="panel-kicker">AT A GLANCE</div><h2>Case workspace</h2><p class="panel-intro">The agent carries context forward while the workflow controls what can be shown.</p><div class="case-card" id="caseCard"><div class="case-lock">♙</div><strong>Claim details are protected</strong><p>Verify three identity details to open the relevant record.</p></div><div class="rule-card"><div class="rule-icon">✦</div><div><strong>How this demo works</strong><p>Identity and consent are enforced by the workflow. The AI model, when configured, helps interpret and phrase grounded responses.</p></div></div><div class="try-card"><div class="panel-kicker">TRY A SCENARIO</div><button type="button" class="scenario" data-text="I’m the policyholder. My name is Margaret Chen, policy POL-9921. I’m calling about my denied healthcare claim from January. DOB is 1985-03-15, SSN last four is 4472."><span>01</span><span>Denied healthcare claim<small>Identity and earlier intent in one turn</small></span><b>↗</b></button><button type="button" class="scenario" data-text="I already told you who I am. This is ridiculous. Just tell me why my claim was denied."><span>02</span><span>Frustrated caller<small>Empathy without bypassing verification</small></span><b>↗</b></button><button type="button" class="scenario" data-text="What is RL?"><span>03</span><span>Out-of-scope question<small>Polite boundary and escalation</small></span><b>↗</b></button></div></aside>
+      </div>
+    </main>
+  </div>
+  <script src="/app.js" defer></script>
+</body>
+</html>
