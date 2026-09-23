@@ -381,6 +381,15 @@ class ConversationTests(unittest.TestCase):
     def test_arithmetic_is_out_of_scope(self):
         self.assertIn("outside what I can help with", self.say("Before we start, what's 2+2?"))
 
+    def test_bare_dates_are_not_arithmetic(self):
+        self.say("I'm Margaret Chen")
+        for dob in ("1985-03-15", "03/15/1985"):
+            session = Session()
+            respond(session, "I'm Margaret Chen", self.model)
+            answer = respond(session, dob, self.model)
+            self.assertEqual(session.fields.get("dob"), "1985-03-15", dob)
+            self.assertNotIn("outside", answer)
+
     def test_generic_alternatives_answer_is_short(self):
         self.open_denied_claim()
         answer = self.say("what if I can't get the documents?")

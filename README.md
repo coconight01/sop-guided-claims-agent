@@ -83,7 +83,7 @@ See [Assessment verification](ASSESSMENT.md) for prompt-by-prompt checks, author
 python -m unittest discover -s tests -v
 ```
 
-The test suite (107 tests) covers the supplied Margaret scenario, early memory, three-field gating, wrong fields and lockout, natural date and name formats, aliases, refusal of individual fields, emotional recovery, escalation, representative authorization, claim narrowing and switching, grounded follow-ups, model-draft rejection and redaction, recipient restrictions, casual consent, session isolation, skip, and cross-policy access. `tests/test_conversation.py` holds the natural-language cases, including every adversarial prompt that exposed a problem on the hosted demo.
+The test suite (108 tests) covers the supplied Margaret scenario, early memory, three-field gating, wrong fields and lockout, natural date and name formats, aliases, refusal of individual fields, emotional recovery, escalation, representative authorization, claim narrowing and switching, grounded follow-ups, model-draft rejection and redaction, recipient restrictions, casual consent, session isolation, skip, and cross-policy access. `tests/test_conversation.py` holds the natural-language cases, including every adversarial prompt that exposed a problem on the hosted demo.
 
 ## Rebuild the public demo
 

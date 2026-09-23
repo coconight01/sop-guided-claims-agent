@@ -61,7 +61,7 @@ OFF_TOPIC_RE = re.compile(
     r"bitcoin|crypto|stock market|\bstocks?\b|\bjokes?\b|\bpoems?\b|\bsongs?\b|\blyrics\b|\bstory\b|capital of|"
     r"write (?:me )?(?:some |a |an )?(?:code|program|script|essay)|\bfootball\b|\bbasketball\b|\bsoccer\b|\bnba\b|"
     r"\bnfl\b|\belection\b|\bpresident\b|\bmovies?\b|\bhomework\b|\bpython\b|\bjavascript\b|meaning of life|"
-    r"\btranslate\b|\bmath\b|\bsolve\b|\bvacation\b|\brestaurant\b|\b\d+\s*[-+*/x]\s*\d+\s*\??$", re.I)
+    r"\btranslate\b|\bmath\b|\bsolve\b|\bvacation\b|\brestaurant\b|\b\d{1,3}\s*[+*x]\s*\d{1,3}\b|\b\d{1,3}\s+[-/]\s+\d{1,3}\b", re.I)
 HUMAN_RE = re.compile(
     r"\b(?:human (?:representative|agent|being)|real person|live (?:agent|person)|"
     r"(?:talk|speak|chat)(?: to| with) (?:a |an |some|your )?(?:one|someone|person|agent|representative|rep|human|supervisor|manager)|"
