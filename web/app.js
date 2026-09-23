@@ -39,7 +39,13 @@ function addMessage(role, text) {
 }
 
 function render(state) {
+  const accessRevoked = current?.verified && !state.verified && state.human_transfer;
   current = state;
+  if (accessRevoked) {
+    $("messages").replaceChildren();
+    const handoff = state.turns.at(-1);
+    if (handoff?.role === "assistant") addMessage("assistant", handoff.text);
+  }
   const phaseIndex = phases.indexOf(state.phase);
   $("steps").replaceChildren(...phases.map((phase, i) => {
     const li = node("li", i < phaseIndex ? "done" : phase === state.phase ? "active" : "");

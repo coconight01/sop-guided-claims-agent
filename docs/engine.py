@@ -38,6 +38,7 @@ class Session:
     intent_hint: str = ""
     holder_id: str = ""
     case_id: str = ""
+    discussed_case_ids: list[str] = field(default_factory=list)
     intent: str = ""
     emotion: str = ""
     preferred_name: str = ""
@@ -100,14 +101,8 @@ def extract_fields(text: str, session: Session) -> None:
                 r"\b(?:not|isn't|is not)\s+" + re.escape(name), text, re.I
             ):
                 session.fields["name"] = name
-        for email in [holder["email"], *holder.get("email_aliases", [])]:
-            if email.lower() in low:
-                session.fields["email"] = email
-        for phone in [holder["phone"], *holder.get("phone_aliases", [])]:
-            if len(digits(phone)) >= 10 and digits(phone)[-10:] in digits(text):
-                session.fields["phone"] = phone
     declared_name = re.search(r"\b(?:my name is|i am|i'm)\s+([a-z][a-z' -]{2,60})", text, re.I)
-    if declared_name:
+    if declared_name and "name" not in session.fields:
         candidate = re.split(r"[,.;!?]|\s+(?:and|with|calling|about|the policyholder|a policyholder)\b", declared_name.group(1), 1, flags=re.I)[0].strip()
         if len(candidate.split()) in (2, 3) and not candidate.lower().startswith(("the ", "a ")):
             session.fields["name"] = candidate
@@ -183,10 +178,47 @@ def is_off_topic(text: str) -> bool:
         return True
     if low in ("hello", "hi", "how are you", "thanks", "thank you", "why?", "how?", "what next?"):
         return False
-    scope = r"\b(?:claim|insurance|policy|denial|denied|appeal|document|report|payment|paid|verification|verify|identity|status|coverage|covered|deductible|reimbursement|submit|submitted|summited|upload|adjuster|representative|pathology|portal|case|email|summary|next|missing|that|this|it|them|those)\b|office note|net pay|net fee|you need|need from me|help me"
-    if re.match(r"^(?:what is|who is|tell me about|how do i (?:bake|cook|write))\b", low) and not re.search(scope, low):
+    scope = r"\bcl[- ]?\d{4}\b|\b(?:claim|insurance|policy|denial|denied|appeal|document|report|payment|paid|verification|verify|identity|status|coverage|covered|deductible|reimbursement|submit|submitted|summited|upload|adjuster|representative|pathology|portal|case|email|summary|next|missing|that|this|it|them|those)\b|office note|net pay|net fee|you need|need from me|help me"
+    if re.match(r"^(?:what is|what are|what's|who is|who's|who won|tell me about|explain|how do i|can you (?:explain|tell me|write|solve|translate))\b", low) and not re.search(scope, low):
         return True
     return False
+
+
+def third_party_declaration(text: str) -> bool:
+    low = norm(text)
+    return bool(
+        re.search(r"\b(?:calling|speaking)\s+on behalf of\b", low)
+        or re.search(r"\b(?:calling|speaking)\s+for\s+my\s+(?:mother|father|wife|husband|son|daughter)\b", low)
+        or re.search(r"\bmy\s+(?:mother|father|wife|husband|son|daughter|client|patient)(?:'s)?\s+(?:claim|policy|dob|date of birth|ssn)\b", low)
+        or re.search(r"\b(?:his|her|their)\s+(?:claim|dob|date of birth|ssn|policy)\b", low)
+        or re.search(r"\b(?:i am|i'm|this is)\s+[^.!?]{0,50}?'s\s+(?:son|daughter|spouse|wife|husband|caregiver|representative)\b", low)
+        or re.search(r"\b(?:i am|i'm|this is)\s+(?:his|her|their)\s+(?:son|daughter|spouse|wife|husband|caregiver|representative)\b", low)
+        or re.search(r"\b(?:i am|i'm)\s+(?:a|the)\s+(?:son|daughter|spouse|wife|husband|caregiver|representative)\s+(?:for|of)\b", low)
+        or "power of attorney" in low
+    )
+
+
+def different_identity(text: str, holder: dict) -> bool:
+    low = norm(text)
+    if any(x in low for x in ("call me", "call my name", "use my name")):
+        return False
+    match = re.search(r"\bmy name is\s+([a-z][a-z'-]*(?:\s+[a-z][a-z'-]*)?)", text, re.I)
+    if not match:
+        match = re.search(r"\b(?i:i am|i'm|this is)\s+([A-Z][a-z'-]+\s+[A-Z][a-z'-]+)\b", text)
+    if not match:
+        return False
+    candidate = norm(match.group(1))
+    if candidate.startswith(("the ", "a ")):
+        return False
+    allowed = [norm(x) for x in [holder["name"], *holder.get("name_aliases", [])]]
+    return candidate not in allowed and candidate not in {x.split()[0] for x in allowed}
+
+
+def representative_self_intro(text: str) -> bool:
+    return any(
+        re.search(r"\b(?:my name is|i am|i'm|this is)\s+" + re.escape(rep["rep_name"]) + r"(?!\w)", text, re.I)
+        for rep in REPS
+    )
 
 
 def detect_hint(text: str, session: Session) -> None:
@@ -219,7 +251,12 @@ def model_safe_text(text: str, extra_names: tuple[str, ...] = ()) -> str:
 
 def choose_claim(text: str, session: Session, model: ModelClient) -> tuple[dict | None, list[dict]]:
     own = [c for c in CLAIMS if c["party_id"] == session.holder_id]
-    full = norm(" ".join((session.case_hint, session.intent_hint, text)))
+    latest = norm(text)
+    strong_new_hint = (
+        re.search(r"\b(?:healthcare|medical|dental|auto|denied|denial|january|february|march|november)\b", latest)
+        or re.search(r"\b20\d{2}\b", latest)
+    )
+    full = latest if strong_new_hint else norm(" ".join((session.case_hint, session.intent_hint, text)))
     explicit = re.findall(r"\bCL[-\s]?(\d{4})\b", full, re.I)
     if explicit:
         own = [c for c in own if c["case_id"] == "CL-" + explicit[-1]]
@@ -258,6 +295,10 @@ def local_topics(text: str) -> list[str]:
     ):
         return ["submission_dispute"]
     topics = []
+    if any(x in low for x in ("format", "pdf", "scan", "legible", "readable", "file type", "what should", "what needs to")) and any(
+        x in low for x in ("document", "report", "note", "file", "upload", "pathology")
+    ):
+        topics.append("document_detail")
     if any(x in low for x in ("why", "denied", "denial", "reason")):
         topics.append("denial_reason")
     if any(x in low for x in ("document", "paperwork", "report", "office note", "what do i need")):
@@ -281,7 +322,22 @@ def local_topics(text: str) -> list[str]:
     return topics[:3] or ["clarify"]
 
 
-def topic_answer(claim: dict, topics: list[str]) -> str:
+def matching_guidance(claim: dict, text: str, category: str) -> list[str]:
+    guidance = GUIDE[category]
+    requested = [
+        doc for doc in claim.get("documents_needed", [])
+        if any(part in norm(text) for part in doc.split() if len(part) > 4)
+    ]
+    docs = requested or claim.get("documents_needed", [])
+    selected = []
+    for doc in docs:
+        key = next((name for name in guidance if doc in name or name in doc), "")
+        if key:
+            selected.append(guidance[key]["en"])
+    return selected
+
+
+def topic_answer(claim: dict, topics: list[str], text: str = "") -> str:
     cid = claim["case_id"]
     docs = claim.get("documents_needed", [])
     doc_list = ", ".join(docs)
@@ -320,8 +376,12 @@ def topic_answer(claim: dict, topics: list[str]) -> str:
         elif topic == "payment":
             parts.append(f"The recorded net payment is ${claim['net_pay']} and the expected reimbursement is "
                          f"${claim['expected_reimbursement_amount']}.")
+        elif topic == "document_detail" and docs:
+            parts.append(GUIDE["default_guidance"]["en"])
+            parts.extend(matching_guidance(claim, text, "document_guidance"))
         elif topic == "alternatives" and docs:
             parts.append(GUIDE["document_alternative_guidance"]["default"]["en"])
+            parts.extend(matching_guidance(claim, text, "document_alternative_guidance"))
     if not parts:
         return ("I don't see enough in this claim record to answer that reliably. "
                 "I can help with its status, denial reason, documents, submission, timing, or payment, "
@@ -343,6 +403,8 @@ def case_response(session: Session, claim: dict, text: str, model: ModelClient) 
         unrelated = route.get("scope") == "unrelated"
     if unrelated:
         return "", True
+    if "document_detail" in topics and "documents" in topics:
+        topics = [topic for topic in topics if topic != "documents"]
     emotion = route.get("emotion", "neutral")
     session.emotion = emotion
     session.intent = topics[0]
@@ -357,7 +419,7 @@ def case_response(session: Session, claim: dict, text: str, model: ModelClient) 
     if session.preferred_name_pending:
         opening = f"{session.preferred_name}, " + opening
         session.preferred_name_pending = False
-    return opening + topic_answer(claim, topics), False
+    return opening + topic_answer(claim, topics, text), False
 
 
 def requested_name(text: str) -> str:
@@ -381,8 +443,10 @@ def off_topic_reply(session: Session) -> str:
 
 
 def summary(session: Session) -> str:
-    claim = next(c for c in CLAIMS if c["case_id"] == session.case_id)
-    lines = [f"Conversation summary for {claim['case_id']}", f"We discussed your {claim['case_type']} claim and its current status: {claim['status']}."]
+    case_ids = list(dict.fromkeys([*session.discussed_case_ids, session.case_id]))
+    claims = [next(c for c in CLAIMS if c["case_id"] == cid) for cid in case_ids if cid]
+    title = claims[0]["case_id"] if len(claims) == 1 else "multiple claims"
+    lines = [f"Conversation summary for {title}"]
     conversation = " ".join(turn["text"].lower() for turn in session.turns if turn["role"] == "user")
     topics = []
     for label, hints in (("the denial reason", ("why", "denied", "denial")),
@@ -394,14 +458,27 @@ def summary(session: Session) -> str:
             topics.append(label)
     if topics:
         lines.append("Topics discussed: " + ", ".join(topics) + ".")
-    if claim.get("denial_reason"):
-        lines.append(f"The recorded denial reason is that {claim['denial_reason']}.")
-    if claim.get("documents_needed"):
-        lines.append("Next step: obtain and submit " + ", ".join(claim["documents_needed"]) + " through the member portal or claim upload link. If online upload is unavailable, contact support for fax or mail options.")
-    if claim.get("appeal_deadline"):
-        lines.append(f"The recorded appeal deadline was {claim['appeal_deadline']}; a human representative can discuss current options.")
+    for claim in claims:
+        lines.append(f"{claim['case_id']}: We discussed your {claim['case_type']} claim and its current status: {claim['status']}.")
+        if claim.get("denial_reason"):
+            lines.append(f"The recorded denial reason for {claim['case_id']} is that {claim['denial_reason']}.")
+        if claim.get("documents_needed"):
+            lines.append(f"Next step for {claim['case_id']}: obtain and submit " + ", ".join(claim["documents_needed"]) + " through the member portal or claim upload link. If online upload is unavailable, contact support for fax or mail options.")
+        if claim.get("appeal_deadline"):
+            lines.append(f"The recorded appeal deadline for {claim['case_id']} was {claim['appeal_deadline']}; a human representative can discuss current options.")
     lines.append("This summary reflects the demo claim record and does not confirm a new claim decision or submission.")
     return "\n\n".join(lines)
+
+
+def requested_other_email(session: Session, text: str) -> bool:
+    holder = next(h for h in HOLDERS if h["party_id"] == session.holder_id)
+    addresses = re.findall(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", text, re.I)
+    redirect = re.search(
+        r"\b(?:to|at)\s+(?:my\s+)?(?:other|work|new|different|another)\s+(?:email|address)\b"
+        r"|\bto\s+my\s+(?:wife|husband|son|daughter|representative)\b",
+        text, re.I,
+    )
+    return bool(redirect or any(address.lower() != holder["email"].lower() for address in addresses))
 
 
 def send_summary(session: Session) -> str:
@@ -416,7 +493,7 @@ def send_summary(session: Session) -> str:
     msg = EmailMessage()
     msg["From"] = os.getenv("SMTP_FROM", "claims@example.test")
     msg["To"] = recipient
-    msg["Subject"] = f"Claim conversation summary — {session.case_id}"
+    msg["Subject"] = "Claim conversation summary"
     msg.set_content(body)
     try:
         with smtplib.SMTP(host, int(os.getenv("SMTP_PORT", "587")), timeout=10) as smtp:
@@ -452,8 +529,19 @@ def _respond(s: Session, text: str, model: ModelClient) -> str:
     if any(x in low for x in ("human representative", "talk to a person", "speak to a person", "real person", "human agent", "live agent")):
         s.human_transfer = True
         return prefix + "I understand. I’ve marked this for a human representative. In this demo, please contact the claims support team directly."
-    if s.holder_id and re.search(r"\b(?:i am not|i'm not|i am a different person|calling on behalf of)\b", low):
+    holder = next((h for h in HOLDERS if h["party_id"] == s.holder_id), None)
+    identity_denial = bool(holder and (
+        re.search(r"\b(?:i am|i'm)\s+(?:not the (?:policyholder|claimant)|a different person)\b", low)
+        or re.search(r"\b(?:i am|i'm)\s+not\s+" + re.escape(holder["name"].lower()) + r"\b", low)
+    ))
+    if holder and (third_party_declaration(text) or identity_denial or different_identity(text, holder)):
         s.human_transfer = True
+        s.holder_id = ""
+        s.case_id = ""
+        s.discussed_case_ids.clear()
+        s.fields.clear()
+        s.email_preview = ""
+        s.turns.clear()
         return ("Thanks for clarifying. I can't continue discussing the verified policyholder's claim "
                 "with a different caller. A representative can check your authorization safely.")
     if s.holder_id:
@@ -463,11 +551,11 @@ def _respond(s: Session, text: str, model: ModelClient) -> str:
             s.preferred_name_pending = True
             s.off_topic_count = 0
             return f"Of course, I’ll call you {name}. What would you like to know about the claim?"
-    if clearly_off_topic(text) or (s.phase == "VERIFY_ID" and is_off_topic(text)):
+    if is_off_topic(text):
         return off_topic_reply(s)
-    if s.phase == "VERIFY_ID" and any(exact_word(text, rep["rep_name"]) for rep in REPS):
+    if s.phase == "VERIFY_ID" and (third_party_declaration(text) or representative_self_intro(text)):
         s.human_transfer = True
-        return prefix + "I can help route a representative request, but this demo cannot establish a third party's authority to access a policyholder's claim. I’ve marked this for a human representative to verify authorization safely."
+        return prefix + "I can’t establish a third party’s authority to access the policyholder’s claim in this demo. I’ve marked this for a human representative to check authorization safely."
     if s.phase == "VERIFY_ID":
         extract_fields(text, s)
         detect_hint(text, s)
@@ -510,9 +598,41 @@ def _respond(s: Session, text: str, model: ModelClient) -> str:
             s.phase = "POST_PROCESS"
             s.email_offered = True
             if any(x in low for x in ("email summary", "send me a summary")):
+                if requested_other_email(s, text):
+                    return "For privacy, I can only send the summary to the email on the verified policyholder's record. Would you like me to send it there or skip?"
                 s.closed = True
                 return prefix + "I can email a summary of what we discussed, the claim status, and next steps. " + send_summary(s)
             return prefix + "Before we finish, would you like an email summary of what we discussed, the claim status, and next steps? You can say “send it” or “skip”."
+        other_ids = re.findall(r"\bCL[-\s]?(\d{4})\b", text, re.I)
+        requested_id = "CL-" + other_ids[-1] if other_ids else ""
+        type_request = re.search(r"\b(?:my|another|other|different)\s+(healthcare|medical|dental|auto)\s+claim\b", low)
+        if requested_id and requested_id != s.case_id:
+            target = next((c for c in CLAIMS if c["case_id"] == requested_id and c["party_id"] == s.holder_id), None)
+            if not target:
+                return "I can't access that claim under the verified policyholder's record. A representative can check authorization or help locate the right claim."
+            s.case_id = requested_id
+            if requested_id not in s.discussed_case_ids:
+                s.discussed_case_ids.append(requested_id)
+            answer, unrelated = case_response(s, target, text, model)
+            return "I found the claim you asked about. " + answer
+        if type_request:
+            kind = "healthcare" if type_request.group(1) == "medical" else type_request.group(1)
+            current = next(c for c in CLAIMS if c["case_id"] == s.case_id)
+            if kind != current["case_type"]:
+                options = [c for c in CLAIMS if c["party_id"] == s.holder_id and c["case_type"] == kind]
+                if len(options) == 1:
+                    target = options[0]
+                    s.case_id = target["case_id"]
+                    if s.case_id not in s.discussed_case_ids:
+                        s.discussed_case_ids.append(s.case_id)
+                    if local_topics(text) == ["clarify"]:
+                        return f"I found {target['case_id']}, your {kind} claim. It is currently {target['status']}. What would you like to know about it?"
+                    answer, unrelated = case_response(s, target, text, model)
+                    return "I found the claim you asked about. " + answer
+                if not options:
+                    return "I couldn't find that claim type under the verified policyholder's record. Do you have a claim ID or another date?"
+                s.phase = "RESOLVE_INTENT"
+                return "Which claim do you mean? I can see: " + "; ".join(f"{c['case_id']} ({c['created_at']})" for c in options) + "."
         claim = next(c for c in CLAIMS if c["case_id"] == s.case_id)
         answer, unrelated = case_response(s, claim, text, model)
         if unrelated:
@@ -527,6 +647,8 @@ def _respond(s: Session, text: str, model: ModelClient) -> str:
         ):
             s.closed = True
             return "Understood. I won’t send an email summary. Thank you for contacting claims support."
+        if requested_other_email(s, text):
+            return "For privacy, I can only send the summary to the email on the verified policyholder's record. Would you like me to send it there or skip?"
         if low in {"yes", "yes please", "send it", "please do", "send email", "send the email"} or any(
             x in low for x in ("send the summary", "send me the summary", "email me the summary")
         ):
@@ -545,7 +667,7 @@ def _respond(s: Session, text: str, model: ModelClient) -> str:
 
 
 def resolve(s: Session, text: str, model: ModelClient, remembered: bool = False) -> str:
-    source = s.intent_hint or text
+    source = (s.intent_hint or text) if remembered else text
     selected, candidates = choose_claim(text, s, model)
     if not selected:
         if not candidates:
@@ -553,7 +675,13 @@ def resolve(s: Session, text: str, model: ModelClient, remembered: bool = False)
         options = "; ".join(f"{c['case_id']} ({c['case_type']}, {c['created_at']}, {c['status']})" for c in candidates)
         return "Which claim do you mean? I can see: " + options + "."
     s.case_id = selected["case_id"]
+    if s.case_id not in s.discussed_case_ids:
+        s.discussed_case_ids.append(s.case_id)
     s.phase = "PROCESS_CASE"
-    answer, _ = case_response(s, selected, source, model)
-    intro = "I used the claim details you mentioned earlier. " if remembered else "I found the matching claim. "
+    if local_topics(source) == ["clarify"]:
+        answer = f"{selected['case_id']} is currently {selected['status']}."
+    else:
+        answer, _ = case_response(s, selected, source, model)
+    intro = (f"I used the details you mentioned earlier to find {selected['case_id']}. " if remembered
+             else f"I found {selected['case_id']}. ")
     return intro + answer + " What else would you like to know?"

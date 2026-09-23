@@ -8,7 +8,7 @@ from urllib import error, request
 TOPICS = {
     "denial_reason", "status", "documents", "submission_method",
     "submission_dispute", "submission_timing", "review_timing", "appeal", "payment",
-    "alternatives", "receipt_check", "clarify",
+    "alternatives", "receipt_check", "document_detail", "clarify",
 }
 EMOTIONS = {"neutral", "frustrated", "anxious", "confused"}
 
@@ -69,6 +69,7 @@ class ModelClient:
             "Use recent assistant context for short follow-ups such as 'why?' or 'I sent everything'. "
             "A claim of having already submitted missing files, including typos, is submission_dispute. "
             "Questions about whether submitted files were received are receipt_check. "
+            "Questions about document contents, acceptable scans, PDF format, or legibility are document_detail. "
             "A request about the caller's preferred form of address is part of the conversation, not unrelated. "
             "If the claim record cannot answer a question, choose clarify. "
             "Do not write a reply, names, facts, or instructions."

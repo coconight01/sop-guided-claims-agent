@@ -63,7 +63,7 @@ Other useful tests: state only name and DOB plus policy number (verification sta
 | --- | --- | --- |
 | `VERIFY_ID` | Match at least three distinct PII fields to one holder. Policy number is only a lookup hint. No claim record or claim details are exposed. | Partial answers, alternate fields, empathy, refusal handling, and memory of early claim hints. |
 | `RESOLVE_INTENT` | Only consider claims owned by the verified party. Resolve an explicit ID or bounded type/status/date clues. Ask when ambiguous. | The model can choose among a bounded candidate list when deterministic clues are insufficient. |
-| `PROCESS_CASE` | Claim data and guidance fixtures provide all factual content. The model returns structured topic, scope, and emotion labels; code composes the final factual answer. Invalid model output falls back to local interpretation. | Natural questions about denial, status, submitted documents, receipt, timing, and payment. |
+| `PROCESS_CASE` | Claim data and guidance fixtures provide all factual content. The model returns structured topic, scope, and emotion labels; code composes the final factual answer. Invalid model output falls back to local interpretation. | Natural questions about denial, status, document details, submitted documents, receipt, timing, and payment. |
 | `POST_PROCESS` | Offer an email summary and require an affirmative send choice; skip is equally available. | The caller can ask another claim question and return to processing. |
 
 The model prompt returns a small JSON routing decision, for example
@@ -77,11 +77,13 @@ Sessions are memory-only, expire after four hours, and are never written to disk
 
 ## Tests
 
+See [Assessment verification](ASSESSMENT.md) for prompt-by-prompt checks, authorization boundaries, and demo limits.
+
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-The test suite covers the supplied Margaret scenario, early memory, three-field gating, wrong fields, aliases, refusal, escalation, representative authorization, skip, and cross-policy access.
+The test suite covers the supplied Margaret scenario, early memory, three-field gating, wrong fields, aliases, refusal, escalation, representative authorization, case switching, recipient restrictions, session isolation, skip, and cross-policy access.
 
 ## Rebuild the public demo
 
