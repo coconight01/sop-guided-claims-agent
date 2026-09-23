@@ -2,7 +2,7 @@
 
 A dependency-free Python web app with a responsive test UI. The supplied starter fixtures are retained under `apps/insurance_claims/fixtures` and are the demo's only claim records.
 
-**Public demo:** <https://coconight01.github.io/sop-guided-claims-agent/>. The GitHub Pages version runs the same Python SOP engine in the browser via Pyodide, using only synthetic starter fixtures. It makes no model API calls and does not accept an API key. Because static-site data can be inspected by visitors, this is a workflow demonstration, not a real identity or privacy boundary. The Python server below enforces the gate before returning claim data and can use a model token stored on the server.
+**Public workflow preview:** <https://coconight01.github.io/sop-guided-claims-agent/>. **Model-backed demo:** <https://sop-guided-claims-agent.onrender.com/>. The GitHub Pages version runs the same Python SOP engine in the browser via Pyodide, using only synthetic starter fixtures. It makes no model API calls and does not accept an API key. Because static-site data can be inspected by visitors, this is a workflow demonstration, not a real identity or privacy boundary. The Python server below enforces the gate before returning claim data and can use a model token stored on the server.
 
 ## Run
 
@@ -12,7 +12,7 @@ Python 3.11 or newer:
 python server.py
 ```
 
-Open <http://localhost:8080>. The demo works without a model token using deterministic fallback responses. To enable AI interpretation and phrasing, set `AI_API_TOKEN` in your environment before starting. `AI_BASE_URL` (OpenAI-compatible chat completions endpoint base) and `AI_MODEL` are configurable. The token stays server-side.
+Open <http://localhost:8080>. The demo works without a model token using deterministic fallback responses. To enable AI interpretation of case questions and emotion, set `AI_API_TOKEN` in your environment before starting. `AI_BASE_URL` (OpenAI-compatible chat completions endpoint base) and `AI_MODEL` are configurable. The token stays server-side.
 
 In PowerShell, for example: `$env:AI_API_TOKEN="YOUR_TOKEN"; python server.py`. See `.env.example` for every optional variable. No package installation is required.
 
@@ -61,9 +61,14 @@ Other useful tests: state only name and DOB plus policy number (verification sta
 | Phase | Code-controlled invariant | Flexible behavior |
 | --- | --- | --- |
 | `VERIFY_ID` | Match at least three distinct PII fields to one holder. Policy number is only a lookup hint. No claim record or claim details are exposed. | Partial answers, alternate fields, empathy, refusal handling, and memory of early claim hints. |
-| `RESOLVE_INTENT` | Only consider claims owned by the verified party. Resolve an explicit ID or bounded type/status/date clues. Ask when ambiguous. | Optional model intent classification and selection among the bounded candidate list. |
-| `PROCESS_CASE` | Claim data and guidance fixtures provide all factual content. A model can rephrase the grounded answer, subject to validation; errors fall back to deterministic wording. | Natural questions about denial, status, documents, submission, timing, and payment. |
+| `RESOLVE_INTENT` | Only consider claims owned by the verified party. Resolve an explicit ID or bounded type/status/date clues. Ask when ambiguous. | The model can choose among a bounded candidate list when deterministic clues are insufficient. |
+| `PROCESS_CASE` | Claim data and guidance fixtures provide all factual content. The model returns structured topic, scope, and emotion labels; code composes the final factual answer. Invalid model output falls back to local interpretation. | Natural questions about denial, status, submitted documents, receipt, timing, and payment. |
 | `POST_PROCESS` | Offer an email summary and require an affirmative send choice; skip is equally available. | The caller can ask another claim question and return to processing. |
+
+The model prompt returns a small JSON routing decision, for example
+`{"scope":"claim","topics":["submission_dispute"],"emotion":"frustrated"}`. Code validates every label and then selects facts from the verified claim and document guidance. It never uses free-form model text as the final answer. Preferred names are conversation preferences, separate from the verified policyholder identity.
+
+For a resolved case, the backend makes at most **one model request per ordinary user turn**. The prompt asks for JSON labels only: scope, up to three topics, and emotion. The model never decides whether identity is verified, whether email consent was given, or which facts are true. Clear workflow commands and obvious unrelated requests use no model call. This keeps the Gemini 3.5 Flash-Lite demo within its project quota more comfortably. A conflicting identity claim pauses disclosure and routes to a representative; a preferred name request changes only how the caller is addressed.
 
 Out-of-scope prompts receive a polite boundary; repeated attempts trigger a human handoff notice. Repeated refusal or an explicit human request also triggers handoff. Representatives are routed to a human because the fixtures do not provide an authorization grant. The demo never claims that a document was submitted or a claim decision changed.
 

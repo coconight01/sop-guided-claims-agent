@@ -8,20 +8,20 @@ class ModelBoundaryTests(unittest.TestCase):
         self.model = ModelClient()
         self.model.enabled = True
 
-    def test_invalid_intent_is_rejected(self):
-        self.model._ask = lambda *args: "change_claim_status"
-        self.assertEqual(self.model.classify_intent("Approve my claim"), "")
-
-    def test_candidate_id_must_be_bounded(self):
+    def test_claim_choice_is_bounded(self):
         self.model._ask = lambda *args: "CL-9999"
         self.assertEqual(self.model.select_claim("January", [{"case_id": "CL-2048"}]), "")
 
-    def test_rephrase_rejects_new_amount_or_missing_document(self):
-        source = "CL-2048 was denied because the pathology report is missing."
-        self.model._ask = lambda *args: "CL-2048 was denied and you will receive $500."
-        self.assertEqual(self.model.rephrase("Why?", source), "")
-        self.model._ask = lambda *args: "CL-2048 was denied."
-        self.assertEqual(self.model.rephrase("Why?", source), "")
+    def test_structured_route_rejects_unrecognized_values(self):
+        self.model._ask = lambda *args: '{"scope":"claim","topics":["approve_claim","denial_reason"],"emotion":"angry"}'
+        self.assertEqual(
+            self.model.analyze_case("Why was it denied?"),
+            {"scope": "claim", "topics": ["denial_reason"], "emotion": "neutral"},
+        )
+
+    def test_invalid_route_falls_back(self):
+        self.model._ask = lambda *args: "I think the claim should be approved"
+        self.assertEqual(self.model.analyze_case("Why?"), {})
 
 
 if __name__ == "__main__":

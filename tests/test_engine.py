@@ -46,6 +46,11 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.session.phase, "PROCESS_CASE")
         self.assertIn("CL-2048", final)
 
+    def test_open_ended_verification_question_is_in_scope(self):
+        answer = self.say("What can I do?")
+        self.assertIn("matching details", answer)
+        self.assertEqual(self.session.off_topic_count, 0)
+
     def test_early_intent_is_acknowledged(self):
         answer = self.say("I am calling about a denied healthcare claim in January.")
         self.assertIn("noted", answer)
@@ -62,6 +67,11 @@ class WorkflowTests(unittest.TestCase):
         answer = self.say("Why do you need to verify my identity?")
         self.assertIn("private health and payment information", answer)
         self.assertEqual(self.session.phase, "VERIFY_ID")
+
+    def test_claim_date_and_third_party_name_are_not_identity_fields(self):
+        self.say("I'm calling about Margaret Chen's claim filed 1985-03-15. My phone is 650-521-2830.")
+        self.assertNotIn("name", self.session.fields)
+        self.assertNotIn("dob", self.session.fields)
 
     def test_policy_number_is_not_pii(self):
         answer = self.say("Margaret Chen, POL-9921, DOB 1985-03-15. Tell me about CL-2048")
@@ -114,6 +124,42 @@ class WorkflowTests(unittest.TestCase):
         answer = self.say("Tell me about CL-3001")
         self.assertNotIn("diagnosis report", answer)
         self.assertEqual(self.session.phase, "RESOLVE_INTENT")
+
+    def test_preferred_name_and_submission_dispute_keep_claim_context(self):
+        self.say("Margaret Chen DOB 1985-03-15, SSN last four 4472. Denied healthcare January claim.")
+        reply = self.say("i am yuhan! call my name!")
+        self.assertIn("Yuhan", reply)
+        self.assertEqual(self.session.case_id, "CL-2048")
+        self.assertEqual(self.session.phase, "PROCESS_CASE")
+        reply = self.say("why!!!!!!! i summited all i have!")
+        self.assertIn("frustrating", reply)
+        self.assertIn("can't confirm", reply)
+        self.assertNotIn("claim-related question", reply)
+        self.assertEqual(self.session.off_topic_count, 0)
+
+    def test_model_routes_once_per_case_turn_and_never_before_verification(self):
+        calls = []
+        self.model.enabled = True
+        self.model._ask = lambda system, user: calls.append((system, user)) or (
+            '{"scope":"claim","topics":["denial_reason"],"emotion":"neutral"}'
+        )
+        self.say("I'm Margaret Chen and calling about a denied healthcare claim in January.")
+        self.assertEqual(len(calls), 0)
+        self.say("DOB 1985-03-15, SSN last four 4472")
+        self.assertEqual(len(calls), 1)
+        self.say("Call me Yuhan")
+        self.assertEqual(len(calls), 1)
+        self.say("why!!!! I summited everything!")
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("Yuhan", calls[-1][1])
+        self.say("That's all")
+        self.assertEqual(len(calls), 2)
+
+    def test_email_requires_clear_consent(self):
+        self.say("Margaret Chen DOB 1985-03-15, SSN last four 4472. Denied healthcare January claim.")
+        self.say("That's all")
+        self.assertIn("send the email summary, or skip", self.say("email"))
+        self.assertFalse(self.session.closed)
 
     def test_document_followup_uses_fixture_guidance(self):
         self.say("Margaret Chen DOB 1985-03-15, SSN last four 4472. Denied healthcare January claim.")
