@@ -96,7 +96,8 @@ async function loadSession() {
     if (data.session.turns.length) data.session.turns.forEach(turn => addMessage(turn.role, turn.text));
     else addMessage("assistant", "Hello, I’m your claims support agent. I can help with a claim, and I’ll first verify your identity to protect your information. Tell me what brings you in, and share any three of your full name, date of birth, phone, email, or ID last four digits when you’re ready.");
     render(data.session);
-  } catch {
+  } catch (error) {
+    console.error("Could not initialize claims chat", error);
     addMessage("assistant", "I couldn’t connect right now. Please refresh the page.");
   }
 }
