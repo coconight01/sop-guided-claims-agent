@@ -2,7 +2,7 @@
 
 The supplied starter ZIP contains only six synthetic fixture JSON files. All six files in this repository match the ZIP byte for byte. The fixture data is treated as test data; workflow rules come from the assessment request and are enforced in code.
 
-Run all checks with `python -m unittest discover -s tests -v`. The current suite has 108 passing tests, including HTTP API tests. The model is disabled for deterministic workflow tests; model JSON parsing, bounded claim choice, 429 fallback, draft grounding, and redaction of model input have separate focused tests.
+Run all checks with `python -m unittest discover -s tests -v`. The current suite has 115 passing tests, including HTTP API tests. The model is disabled for deterministic workflow tests; model JSON parsing, bounded claim choice, 429 fallback, draft grounding, and redaction of model input have separate focused tests.
 
 | Requirement | Prompt or action to try | Expected boundary and evidence |
 | --- | --- | --- |
@@ -35,6 +35,8 @@ Run all checks with `python -m unittest discover -s tests -v`. The current suite
 | Post-process choice | Say `That's all`, then `send it` or `skip` (or `sure` / `nah I'm good`). | Offers summary with topics discussed, status, and next steps; sending requires clear consent, while skipping sends nothing. `ok, but how long does review take?` is answered as a question and does not send. |
 | Contact details | `what's the phone number of your claims office?` | In scope; states that no contact details are available instead of inventing one. |
 | Change of mind on email | `don't send it... actually yes send it`; `send it to my gmail instead`, then `fine, the one on file then` | The last clause decides; a mailbox change is refused and the recorded address is offered. |
+| Why consent is needed | During the email choice: `why do you need my permission to email it?` | Explains that the summary holds private claim details, so it is sent only on a yes and only to the recorded address; nothing is sent. |
+| Model freedom by phase | `python -m unittest tests.test_phase_permissions` | A hostile model can only label scope in `VERIFY_ID`, cannot pick another holder's claim in `RESOLVE_INTENT`, cannot change facts or state in `PROCESS_CASE`, and is never called in `POST_PROCESS`. |
 | Alternate recipient | Request a summary at another email address or say `send it to my work email`. | Does not send; asks whether to use the verified policyholder's recorded address or skip. |
 | Session isolation | Submit an unknown session ID, then reset a valid session and try the old ID. | Chat requests with unknown or invalidated IDs return HTTP 404. |
 | Model degradation | Simulate HTTP 429 on Gemini 3.5 Flash Lite. | Tries Gemini 3.1 Flash Lite once; if unavailable, local bounded routing continues. HTTP 401 does not trigger a second model call. |

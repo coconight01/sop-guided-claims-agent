@@ -402,6 +402,24 @@ class ConversationTests(unittest.TestCase):
         self.model_reply(bad)
         self.assertNotEqual(self.say("why was it denied?"), bad)
 
+    # ---- Requirement audit gaps
+
+    def test_consent_reason_is_explained_without_sending(self):
+        self.open_denied_claim()
+        self.say("that's all")
+        answer = self.say("why do you need my permission to email it?")
+        self.assertIn("only send it when you say yes", answer)
+        self.assertEqual(self.session.phase, "POST_PROCESS")
+        self.assertEqual(self.session.email_result, "")
+        self.assertIn("Demo outbox", self.say("ok send it"))
+
+    def test_goodbye_before_choosing_a_claim_closes_politely(self):
+        self.say(VERIFY)
+        answer = self.say("actually nothing, that's all, bye")
+        self.assertIn("nothing to summarize", answer)
+        self.assertTrue(self.session.closed)
+        self.assertNotIn("CL-2048", self.say("my denied claim"))
+
     # ---- Model phrasing is accepted only when grounded
 
     def model_reply(self, reply, topics=("denial_reason",)):

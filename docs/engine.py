@@ -1259,6 +1259,8 @@ def _respond(s: Session, text: str, model: ModelClient) -> str:
     if s.phase == "VERIFY_ID":
         return verify_turn(s, text, model)
     if s.phase == "RESOLVE_INTENT":
+        if s.closed:
+            return "This conversation is complete. You can start a new conversation for another claim."
         s.off_topic_count = 0
         lead = opening(s, emotion_of(text))
         own = [c for c in CLAIMS if c["party_id"] == s.holder_id]
@@ -1267,12 +1269,21 @@ def _respond(s: Session, text: str, model: ModelClient) -> str:
             return lead + f"Your policy has {len(own)} claims: " + claim_list(own) + ". Which one would you like to discuss?"
         if smalltalk(text):
             return "Which claim can I help you with? You can describe it, for example \"my denied claim\" or \"the auto claim\"."
+        if is_closing(text) or re.search(r"\b(?:nothing|never ?mind)\b.*\b(?:bye|that'?s all|thanks)\b", low):
+            # No claim was opened, so there is nothing to summarize and no email to offer.
+            s.closed = True
+            return ("No problem. Since we didn't open a claim today, there's nothing to summarize. "
+                    "Thank you for contacting claims support.")
         return lead + resolve(s, text, model)
     if s.phase == "PROCESS_CASE":
         return case_turn(s, text, model)
     if s.phase == "POST_PROCESS":
         if s.closed:
             return "This conversation is complete. You can start a new conversation for another claim."
+        if re.search(r"\bwhy\b", low) and re.search(r"\b(?:permission|consent|ask(?:ing)?|agree|email|summary|send)\b", low):
+            return ("The summary includes your claim status, the denial reason, and health-related next steps, so I only "
+                    "send it when you say yes, and only to the email on your policy record. That keeps private "
+                    "information from going anywhere you didn't choose. Would you like me to send it, or skip it?")
         if requested_other_email(s, text):
             return ("For privacy, I can only send the summary to the email on the verified policyholder's record. "
                     "Would you like me to send it there or skip?")
