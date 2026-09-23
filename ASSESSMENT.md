@@ -2,7 +2,7 @@
 
 The supplied starter ZIP contains only six synthetic fixture JSON files. All six files in this repository match the ZIP byte for byte. The fixture data is treated as test data; workflow rules come from the assessment request and are enforced in code.
 
-Run all checks with `python -m unittest discover -s tests -v`. The current suite has 99 passing tests, including HTTP API tests. The model is disabled for deterministic workflow tests; model JSON parsing, bounded claim choice, 429 fallback, draft grounding, and redaction of model input have separate focused tests.
+Run all checks with `python -m unittest discover -s tests -v`. The current suite has 107 passing tests, including HTTP API tests. The model is disabled for deterministic workflow tests; model JSON parsing, bounded claim choice, 429 fallback, draft grounding, and redaction of model input have separate focused tests.
 
 | Requirement | Prompt or action to try | Expected boundary and evidence |
 | --- | --- | --- |

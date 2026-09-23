@@ -8,7 +8,7 @@ from urllib import error, request
 TOPICS = {
     "denial_reason", "status", "documents", "submission_method",
     "submission_dispute", "submission_timing", "review_timing", "appeal", "payment",
-    "alternatives", "receipt_check", "document_detail", "next_steps", "outcome", "contact", "clarify",
+    "alternatives", "receipt_check", "document_detail", "next_steps", "outcome", "contact", "exception", "clarify",
 }
 EMOTIONS = {"neutral", "frustrated", "anxious", "confused"}
 
@@ -92,6 +92,7 @@ class ModelClient:
             "Questions about document contents, acceptable scans, PDF format, or legibility are document_detail. "
             "'What do I do now' is next_steps; 'will it be approved' or 'will I get paid' is outcome. "
             "Questions about contacting support or the claims office are contact and are in scope. "
+            "Requests to waive requirements or make an exception are exception. "
             "A request about the caller's preferred form of address is part of the conversation, not unrelated. "
             "If the claim record cannot answer a question, choose clarify. "
             + ("Reply rules: two to four short sentences in a warm, plain customer-service voice. "

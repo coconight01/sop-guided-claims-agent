@@ -343,6 +343,56 @@ class ConversationTests(unittest.TestCase):
         answer = self.say("what's the phone number of your claims office?")
         self.assertNotIn("outside what I can help with", answer)
 
+    # ---- Second live round
+
+    def test_two_digit_birth_year_is_not_a_claim_month(self):
+        self.say("Hi it's Margaret Chen, born on the 15th of March, 85")
+        self.assertEqual(self.session.fields.get("dob"), "1985-03-15")
+        self.assertFalse(self.session.case_hint)
+        self.say("my email is margaret@email.com")
+        self.assertTrue(self.session.holder_id)
+        self.assertEqual(self.session.phase, "RESOLVE_INTENT")
+
+    def test_cc_request_never_sends(self):
+        self.open_denied_claim()
+        self.say("that's all thanks")
+        answer = self.say("sure, and cc my husband on it")
+        self.assertIn("verified policyholder's record", answer)
+        self.assertEqual(self.session.email_result, "")
+
+    def test_waiver_request_is_answered_directly(self):
+        self.open_denied_claim()
+        answer = self.say("Can you waive the missing documents requirement?")
+        self.assertIn("can't waive", answer)
+        self.assertLess(len(answer), 400)
+
+    def test_joke_while_stressed_is_declined_kindly(self):
+        self.open_denied_claim()
+        answer = self.say("tell me a joke to cheer me up, this claim is stressing me out")
+        self.assertIn("outside what I can do", answer)
+        self.assertRegex(answer, "worrying|stressful")
+        self.assertEqual(self.session.off_topic_count, 0)
+
+    def test_what_is_a_document_uses_its_guidance(self):
+        self.open_denied_claim()
+        answer = self.say("I'm confused, what even is a pathology report?")
+        self.assertIn("specimen details", answer)
+
+    def test_arithmetic_is_out_of_scope(self):
+        self.assertIn("outside what I can help with", self.say("Before we start, what's 2+2?"))
+
+    def test_generic_alternatives_answer_is_short(self):
+        self.open_denied_claim()
+        answer = self.say("what if I can't get the documents?")
+        self.assertIn("which one is hard to get", answer)
+        self.assertLess(len(answer), 700)
+
+    def test_model_cannot_call_a_denial_final(self):
+        self.open_denied_claim()
+        bad = "The pathology report and the office note were missing, and the decision is final."
+        self.model_reply(bad)
+        self.assertNotEqual(self.say("why was it denied?"), bad)
+
     # ---- Model phrasing is accepted only when grounded
 
     def model_reply(self, reply, topics=("denial_reason",)):

@@ -61,7 +61,7 @@ OFF_TOPIC_RE = re.compile(
     r"bitcoin|crypto|stock market|\bstocks?\b|\bjokes?\b|\bpoems?\b|\bsongs?\b|\blyrics\b|\bstory\b|capital of|"
     r"write (?:me )?(?:some |a |an )?(?:code|program|script|essay)|\bfootball\b|\bbasketball\b|\bsoccer\b|\bnba\b|"
     r"\bnfl\b|\belection\b|\bpresident\b|\bmovies?\b|\bhomework\b|\bpython\b|\bjavascript\b|meaning of life|"
-    r"\btranslate\b|\bmath\b|\bsolve\b|\bvacation\b|\brestaurant\b", re.I)
+    r"\btranslate\b|\bmath\b|\bsolve\b|\bvacation\b|\brestaurant\b|\b\d+\s*[-+*/x]\s*\d+\s*\??$", re.I)
 HUMAN_RE = re.compile(
     r"\b(?:human (?:representative|agent|being)|real person|live (?:agent|person)|"
     r"(?:talk|speak|chat)(?: to| with) (?:a |an |some|your )?(?:one|someone|person|agent|representative|rep|human|supervisor|manager)|"
@@ -183,9 +183,9 @@ def deadline_passed(claim: dict) -> bool:
 def parse_date(s: str) -> str:
     patterns = (
         (r"\b((?:19|20)\d\d)[-/.](\d{1,2})[-/.](\d{1,2})\b", "ymd"),
-        (r"\b(\d{1,2})[-/.](\d{1,2})[-/.]((?:19|20)\d\d)\b", "mdy"),
-        (MONTH_RE + r"\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+((?:19|20)\d\d)\b", "Mdy"),
-        (r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?" + MONTH_RE + r"\.?,?\s+((?:19|20)\d\d)\b", "dMy"),
+        (r"\b(\d{1,2})[-/.](\d{1,2})[-/.]((?:19|20)?\d\d)\b", "mdy"),
+        (MONTH_RE + r"\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+'?((?:19|20)?\d\d)\b", "Mdy"),
+        (r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?" + MONTH_RE + r"\.?,?\s+'?((?:19|20)?\d\d)\b", "dMy"),
     )
     for pattern, order in patterns:
         m = re.search(pattern, s, re.I)
@@ -203,6 +203,8 @@ def parse_date(s: str) -> str:
                 mo, d, y = MONTH_NAMES.index(next(n for n in MONTH_NAMES if n.startswith(a[:3].lower()))) + 1, int(b), int(c)
             else:
                 d, mo, y = int(a), MONTH_NAMES.index(next(n for n in MONTH_NAMES if n.startswith(b[:3].lower()))) + 1, int(c)
+            if y < 100:
+                y += 1900 if y > today().year % 100 else 2000
             return date(y, mo, d).isoformat()
         except (ValueError, StopIteration):
             continue
@@ -323,7 +325,7 @@ def emotion_of(text: str) -> str:
                   r"\bstupid\b|terrible|awful|fed up|sick of|\bwtf\b|\bdamn\b|\bpissed\b|not satisfied|still waiting", low)
             or text.count("!") >= 3 or shouting(text)):
         return "frustrated"
-    if re.search(r"worried|anxious|scared|stressed|afraid|overwhelmed|panic|can'?t afford|cannot afford|nervous|desperate|"
+    if re.search(r"worried|anxious|scared|stress\w*|afraid|overwhelmed|panic|can'?t afford|cannot afford|nervous|desperate|"
                  r"terrified|lose (?:my )?(?:house|home|job|apartment)|can'?t (?:sleep|breathe|cope)|please,? (?:just )?help", low):
         return "anxious"
     if re.search(r"confused|don'?t understand|do not understand|unclear|makes no sense|what does that mean|i'?m lost", low):
@@ -351,7 +353,7 @@ def scope_state(text: str) -> str:
     if re.search(r"reinforcement learning|\bwhat(?:'s| is) rl\b", low) or (OFF_TOPIC_RE.search(low) and not claim_words):
         return "unrelated"
     if (claim_words or re.search(WEAK_REFERENCES, low) or smalltalk(text) or emotion_of(text) != "neutral"
-            or REFUSAL_RE.search(low) or re.search(r"\d|@", low) or declared_name(text)
+            or REFUSAL_RE.search(low) or re.search(r"\d{4}|\d[-/.]\d|@", low) or declared_name(text)
             or re.fullmatch(r"[A-Z][a-z'-]+(?:\s+[A-Z][a-z'-]+){0,2}[.!]?", text.strip())):
         return "claim"
     if re.match(r"^(?:what is|what are|what's|who is|who's|who won|where is|when did|tell me about|explain|how do i|how to|"
@@ -450,8 +452,8 @@ def refused_field(text: str) -> str:
 
 def without_identity(text: str) -> str:
     """Drop date-of-birth wording so a birth month is never mistaken for a claim clue."""
-    return re.sub(DOB_CUE + r"[^\w]{0,5}(?:is\s+|was\s+)?(?:" + MONTH_RE + r"\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}"
-                  r"|\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?" + MONTH_RE + r"\.?,?\s+\d{4}|\d{1,4}[-/.]\d{1,2}[-/.]\d{2,4})",
+    return re.sub(DOB_CUE + r"[^\w]{0,5}(?:is\s+|was\s+)?(?:the\s+)?(?:" + MONTH_RE + r"\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+'?\d{2,4}"
+                  r"|\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?" + MONTH_RE + r"\.?,?\s+'?\d{2,4}|\d{1,4}[-/.]\d{1,2}[-/.]\d{2,4})",
                   " ", text, flags=re.I)
 
 
@@ -654,6 +656,11 @@ def local_topics(text: str) -> list[str]:
     if re.search(r"\b(?:phone number|contact|call (?:you|someone|the office)|reach (?:you|someone|a person)|office hours|"
                  r"mailing address|fax number)\b", low) and "submission_method" not in topics:
         topics.append("contact")
+    if re.search(r"\bwaive\w*|\bexception\b|\bskip (?:the )?(?:documents?|requirement)|\bwithout (?:the )?(?:documents?|report|note)|"
+                 r"\boverride\b|\bbend the rules?\b", low):
+        topics.insert(0, "exception")
+    if re.search(r"\bwhat(?:'s| is| even is| exactly is)\s+(?:a|an|the)\s+(?:pathology|office note|diagnosis|repair estimate|report|note)", low):
+        topics.insert(0, "document_detail")
     if "alternatives" in topics and "documents" in topics:
         topics.remove("documents")
     return topics[:3] or ["clarify"]
@@ -756,16 +763,23 @@ def topic_answer(claim: dict, topics: list[str], text: str = "") -> str:
                 parts.append(f"The record doesn't list anything you need to send for {cid}; it is still in progress.")
             else:
                 parts.append(f"{cid} is {claim['status']}, and the record shows nothing outstanding.")
+        elif topic == "exception":
+            parts.append("I can't waive or change the claim requirements from this chat. " + (
+                f"The record lists {doc_phrase(claim)} as needed; if you can't get them, a representative can review "
+                "manual options with you." if docs else "A representative can review the claim with you."))
         elif topic == "contact":
             parts.append("I don't have contact details for the claims office in this chat, so I won't guess a number "
                          "or address. If you'd like, I can mark this conversation for a human representative.")
         elif topic == "document_detail" and docs:
             specific = matching_guidance(claim, text, "document_guidance")
-            parts.extend(specific if len(specific) < len(docs) else [GUIDE["default_guidance"]["en"], *specific])
+            parts.extend(specific if len(specific) < len(docs) else [
+                GUIDE["default_guidance"]["en"], f"Tell me which document you're preparing ({join_words(docs, 'or')}) "
+                "and I'll share what it should include."])
         elif topic == "alternatives" and docs:
             specific = matching_guidance(claim, text, "document_alternative_guidance")
-            parts.extend(specific if len(specific) < len(docs)
-                         else [GUIDE["document_alternative_guidance"]["default"]["en"], *specific])
+            parts.extend(specific if len(specific) < len(docs) else [
+                GUIDE["document_alternative_guidance"]["default"]["en"],
+                f"If you tell me which one is hard to get ({join_words(docs, 'or')}), I can share specific options."])
     if not parts:
         options = ("its status, denial reason, documents, how to submit them, timing, or payment, "
                    "or connect you with a representative")
@@ -830,7 +844,11 @@ def grounded(reply: str, claim: dict, topics: list[str], facts: dict) -> bool:
                 return False
     low = reply.lower()
     docs = claim.get("documents_needed", [])
-    if {"denial_reason", "documents"} & set(topics) and docs and not all(doc in low for doc in docs):
+    if "denial_reason" in topics and docs and not all(doc in low for doc in docs):
+        return False
+    if "documents" in topics and docs and not any(doc in low for doc in docs):
+        return False
+    if re.search(r"\b(?:final|permanent|irreversible|closed for good)\b", low) and claim["status"] != "closed":
         return False
     if "payment" in topics and float(claim["net_pay"]) not in numbers_in(reply):
         return False
@@ -939,7 +957,8 @@ def requested_other_email(session: Session, text: str) -> bool:
     redirect = re.search(
         r"\b(?:to|at)\s+(?:my\s+)?(?:other|work|new|different|another|personal|second)\s+(?:email|address)\b"
         r"|\bto\s+my\s+(?:wife|husband|son|daughter|representative|mom|dad|lawyer|friend)\b"
-        r"|\bmy\s+(?:gmail|yahoo|hotmail|outlook|icloud|proton\w*|personal|work|office|other|new)(?:\s+(?:email|address|account|inbox))?\b",
+        r"|\bmy\s+(?:gmail|yahoo|hotmail|outlook|icloud|proton\w*|personal|work|office|other|new)(?:\s+(?:email|address|account|inbox))?\b"
+        r"|\b(?:cc|bcc|copy|forward|also send|share)\b.{0,25}\b(?:my\s+\w+|him|her|them|someone|anyone|others?)\b",
         text, re.I,
     )
     return bool(redirect or any(address.lower() != holder["email"].lower() for address in addresses))
@@ -1178,6 +1197,11 @@ def case_turn(s: Session, text: str, model: ModelClient) -> str:
         return f"Is there anything else about {s.case_id} I can help with, or shall we wrap up?"
     if scope_state(text) == "unsure_question" and not model.enabled:
         return off_topic_reply(s)
+    if OFF_TOPIC_RE.search(low) and local_topics(text) == ["clarify"]:
+        # An unrelated request mixed with claim feelings: decline that part without counting it as off-topic.
+        return (opening(s, emotion_of(text)) + f"That part is outside what I can do here, but I'm here to help with "
+                f"the claim itself. For {s.case_id}, I can explain what's needed next, how to submit documents, "
+                "timing, or payment, or connect you with a representative. What would help most?")
     answer, unrelated = case_response(s, current, text, model)
     if unrelated:
         return off_topic_reply(s)
