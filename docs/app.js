@@ -98,7 +98,7 @@ async function loadSession() {
     render(data.session);
   } catch (error) {
     console.error("Could not initialize claims chat", error);
-    addMessage("assistant", "Demo startup failed: " + String(error));
+    addMessage("assistant", "I couldn’t connect right now. Please refresh the page.");
   }
 }
 
