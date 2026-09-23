@@ -137,6 +137,14 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("claim-related question", reply)
         self.assertEqual(self.session.off_topic_count, 0)
 
+    def test_preferred_name_is_used_in_next_case_reply(self):
+        self.say("Margaret Chen DOB 1985-03-15, SSN last four 4472. Denied healthcare January claim.")
+        self.assertIn("Alex", self.say("Please call me Alex"))
+        reply = self.say("I submitted everything. Why is it still denied?")
+        self.assertIn("Alex", reply)
+        self.assertIn("can't confirm", reply)
+        self.assertEqual(self.session.phase, "PROCESS_CASE")
+
     def test_model_routes_once_per_case_turn_and_never_before_verification(self):
         calls = []
         self.model.enabled = True

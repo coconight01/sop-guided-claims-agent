@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import os
-from urllib import request
+from urllib import error, request
 
 TOPICS = {
     "denial_reason", "status", "documents", "submission_method",
@@ -18,24 +18,37 @@ class ModelClient:
         self.token = os.getenv("AI_API_TOKEN", "")
         self.url = os.getenv("AI_BASE_URL", "https://api.openai.com/v1").rstrip("/") + "/chat/completions"
         self.model = os.getenv("AI_MODEL", "gpt-4o-mini")
+        default_fallback = "gemini-3.1-flash-lite" if (
+            "generativelanguage.googleapis.com" in self.url and self.model == "gemini-3.5-flash-lite"
+        ) else ""
+        self.fallback_model = os.getenv("AI_FALLBACK_MODEL", default_fallback)
         self.enabled = bool(self.token)
 
     def _ask(self, system: str, user: str) -> str:
         if not self.enabled:
             return ""
-        payload = json.dumps({
-            "model": self.model, "temperature": 0, "max_tokens": 220,
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        }).encode()
-        req = request.Request(self.url, data=payload, headers={
-            "Authorization": "Bearer " + self.token, "Content-Type": "application/json",
-        }, method="POST")
-        try:
-            with request.urlopen(req, timeout=8) as res:
-                data = json.load(res)
-            return data["choices"][0]["message"]["content"].strip()
-        except Exception:
-            return ""
+        for model in dict.fromkeys((self.model, self.fallback_model)):
+            if not model:
+                continue
+            payload = json.dumps({
+                "model": model, "temperature": 0, "max_tokens": 220,
+                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            }).encode()
+            req = request.Request(self.url, data=payload, headers={
+                "Authorization": "Bearer " + self.token, "Content-Type": "application/json",
+            }, method="POST")
+            try:
+                with request.urlopen(req, timeout=8) as res:
+                    data = json.load(res)
+                return data["choices"][0]["message"]["content"].strip()
+            except error.HTTPError as exc:
+                if exc.code not in (429, 500, 502, 503, 504):
+                    break
+            except (error.URLError, TimeoutError, OSError):
+                pass
+            except (KeyError, IndexError, TypeError, ValueError):
+                break
+        return ""
 
     def select_claim(self, hint: str, candidates: list[dict]) -> str:
         result = self._ask(

@@ -12,7 +12,7 @@ Python 3.11 or newer:
 python server.py
 ```
 
-Open <http://localhost:8080>. The demo works without a model token using deterministic fallback responses. To enable AI interpretation of case questions and emotion, set `AI_API_TOKEN` in your environment before starting. `AI_BASE_URL` (OpenAI-compatible chat completions endpoint base) and `AI_MODEL` are configurable. The token stays server-side.
+Open <http://localhost:8080>. The demo works without a model token using deterministic fallback responses. To enable AI interpretation of case questions and emotion, set `AI_API_TOKEN` in your environment before starting. `AI_BASE_URL` (OpenAI-compatible chat completions endpoint base), `AI_MODEL`, and optional `AI_FALLBACK_MODEL` are configurable. The token stays server-side.
 
 In PowerShell, for example: `$env:AI_API_TOKEN="YOUR_TOKEN"; python server.py`. See `.env.example` for every optional variable. No package installation is required.
 
@@ -26,6 +26,7 @@ In PowerShell, set these variables **in the terminal running the backend**, then
 $env:AI_API_TOKEN = "your-test-key"
 $env:AI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 $env:AI_MODEL = "gemini-3.5-flash-lite"
+$env:AI_FALLBACK_MODEL = "gemini-3.1-flash-lite"
 python server.py
 ```
 
@@ -68,7 +69,7 @@ Other useful tests: state only name and DOB plus policy number (verification sta
 The model prompt returns a small JSON routing decision, for example
 `{"scope":"claim","topics":["submission_dispute"],"emotion":"frustrated"}`. Code validates every label and then selects facts from the verified claim and document guidance. It never uses free-form model text as the final answer. Preferred names are conversation preferences, separate from the verified policyholder identity.
 
-For a resolved case, the backend makes at most **one model request per ordinary user turn**. The prompt asks for JSON labels only: scope, up to three topics, and emotion. The model never decides whether identity is verified, whether email consent was given, or which facts are true. Clear workflow commands and obvious unrelated requests use no model call. This keeps the Gemini 3.5 Flash-Lite demo within its project quota more comfortably. A conflicting identity claim pauses disclosure and routes to a representative; a preferred name request changes only how the caller is addressed.
+For a resolved case, the backend makes at most **one model request per ordinary user turn**. The prompt asks for JSON labels only: scope, up to three topics, and emotion. The model never decides whether identity is verified, whether email consent was given, or which facts are true. Clear workflow commands and obvious unrelated requests use no model call. This keeps the Gemini 3.5 Flash-Lite demo within its project quota more comfortably. If the primary model is rate-limited, times out, or returns a server error, the same call tries Gemini 3.1 Flash-Lite. Authentication and request errors do not trigger a second model call. If both models are unavailable, the local bounded interpreter continues the SOP. These are separate per-model quotas, not extra requests against the primary quota. A conflicting identity claim pauses disclosure and routes to a representative; a preferred name request changes only how the caller is addressed.
 
 Out-of-scope prompts receive a polite boundary; repeated attempts trigger a human handoff notice. Repeated refusal or an explicit human request also triggers handoff. Representatives are routed to a human because the fixtures do not provide an authorization grant. The demo never claims that a document was submitted or a claim decision changed.
 

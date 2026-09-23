@@ -1,5 +1,6 @@
 /* GitHub Pages adapter: the original Python engine runs in WebAssembly.
    No customer data or API keys are sent to a model or Goaly from this demo. */
+const ASSET_VERSION = "ed77e1cb93";
 let pythonRuntime;
 const demoReady = (async () => {
   if (typeof loadPyodide !== "function") throw new Error("Python demo runtime could not load");
@@ -10,7 +11,7 @@ const demoReady = (async () => {
     "representatives.json", "required_document_guideline.json"
   ].map(name => `apps/insurance_claims/fixtures/${name}`)];
   await Promise.all(files.map(async path => {
-    const res = await fetch(path);
+    const res = await fetch(`${path}?v=${ASSET_VERSION}`);
     if (!res.ok) throw new Error(`Could not load ${path}`);
     py.FS.writeFile(`/app/${path}`, new Uint8Array(await res.arrayBuffer()));
   }));

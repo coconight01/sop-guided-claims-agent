@@ -41,6 +41,7 @@ class Session:
     intent: str = ""
     emotion: str = ""
     preferred_name: str = ""
+    preferred_name_pending: bool = False
     refusal_count: int = 0
     off_topic_count: int = 0
     human_transfer: bool = False
@@ -353,6 +354,9 @@ def case_response(session: Session, claim: dict, text: str, model: ModelClient) 
         opening = "Let me make this clearer. "
     else:
         opening = empathy(text)
+    if session.preferred_name_pending:
+        opening = f"{session.preferred_name}, " + opening
+        session.preferred_name_pending = False
     return opening + topic_answer(claim, topics), False
 
 
@@ -456,9 +460,9 @@ def _respond(s: Session, text: str, model: ModelClient) -> str:
         name = requested_name(text)
         if name:
             s.preferred_name = name
+            s.preferred_name_pending = True
             s.off_topic_count = 0
-            return (f"Of course, I can call you {name}. The claim remains tied to the identity verified earlier. "
-                    "If you're calling for someone else, a representative will need to verify your authorization.")
+            return f"Of course, I’ll call you {name}. What would you like to know about the claim?"
     if clearly_off_topic(text) or (s.phase == "VERIFY_ID" and is_off_topic(text)):
         return off_topic_reply(s)
     if s.phase == "VERIFY_ID" and any(exact_word(text, rep["rep_name"]) for rep in REPS):
