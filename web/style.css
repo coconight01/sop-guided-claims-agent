@@ -162,3 +162,5 @@ button:focus-visible, textarea:focus-visible { outline: 3px solid var(--accent);
   .composer-wrap { padding: 10px 12px 12px; }
   .phase-pill { font-size: 9px; }
 }
+#actionChips .chip { display: inline-block; text-transform: none; color: var(--text); }
+#actionChips .chip::first-letter { text-transform: uppercase; }

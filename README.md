@@ -2,7 +2,7 @@
 
 ## For reviewers
 
-**Live demo:** <https://sop-guided-claims-agent.onrender.com/> (free hosting: the first load after idle can take about a minute).
+**Live demo:** <https://sop-guided-claims-agent.onrender.com/> (free hosting, kept awake by a scheduled health check in `.github/workflows/keep-awake.yml`; if it was idle anyway, the first load can take about a minute).
 
 Try these in one conversation, in order:
 
@@ -81,10 +81,21 @@ Other useful tests: state only name and DOB plus policy number (verification sta
 
 **Callers other than the policyholder.** The assignment requires three matching PII fields; it does not say who may call. The starter data adds `representatives.json` (David Chen, Margaret Chen's son) and `consent_scenarios.json` (a consent record that goes `pending → approved`, or stays `pending` on timeout). The agent therefore accepts a representative only when all of these hold: the caller names themself as a representative listed for that policyholder, any stated relationship matches the record, the **policyholder's** three details match, and the simulated consent record reaches `approved`. Until then nothing about the claim is shared; the agent explains why consent is needed; a timeout, an unlisted person, a mismatched relationship, or another policyholder's details all go to a human. Set `CONSENT_SCENARIO=timeout` to demo the timeout path. Try: `I'm David Chen, Margaret Chen's son, calling about my mother's denied claim from January. Her DOB is 1985-03-15, SSN last four 4472.`, then `any update?`.
 
+**Allowed actions per phase.** `PHASE_ACTIONS` in `engine.py` lists what each phase may do, and `allow()` checks every claim read, claim selection, consent request, email send, and skip against it (plus verification and ownership). The test UI shows the current list under "What I can do right now".
+
+| Phase | Allowed actions |
+| --- | --- |
+| `VERIFY_ID` | check identity details, remember requests for later, explain verification, request policyholder consent (representatives), hand off |
+| `RESOLVE_INTENT` | list the caller's own claims, open one of them, hand off |
+| `PROCESS_CASE` | answer from the open claim record and document guidance, switch to another own claim, hand off |
+| `POST_PROCESS` | send the email summary on consent, skip it, answer from the claim record, hand off |
+
+**Memory across phases.** Anything said early that belongs to a later phase is kept without acting on it: the claim hint and question (used to open the claim right after verification), a preferred name ("call me Maggie"), an early email-summary request (the closing offer then says "earlier you asked for an email summary", still asking for a yes), and statements such as "I already uploaded the pathology report" (answered after verification without asking again).
+
 **Model freedom by phase.** `VERIFY_ID`: the model may only label an unclear message `claim` or `unrelated`; code writes every reply and decides verification. `RESOLVE_INTENT`: the model may pick one ID from the verified caller's own candidate claims; anything else is discarded. `PROCESS_CASE`: the model may label topics and emotion and draft wording, which code checks against the record. `POST_PROCESS`: no model call; consent, recipient, and summary are code only. `tests/test_phase_permissions.py` feeds hostile model output into every phase to prove these limits.
 
 In `PROCESS_CASE` the model receives the caller's redacted message, the previous reply, and a fact sheet for the verified claim only (status, denial reason, documents, deadlines, amounts, and matching guidance; no name, contact details, or other claims). It returns JSON such as
-`{"scope":"claim","topics":["denial_reason"],"emotion":"frustrated","reply":"..."}`. Code validates every label. The `reply` is a draft, not an answer: `grounded()` in `engine.py` rejects it if it contains a number, date, or case ID absent from the record, omits a required fact (for example the missing documents or the paid amount), promises approval or payment, claims receipt, or says the agent took an action. A rejected or missing draft falls back to the fixture-based template. Preferred names are conversation preferences, separate from the verified policyholder identity.
+`{"scope":"claim","topics":["denial_reason"],"emotion":"frustrated","reply":"..."}`. Code validates every label. The `reply` is a draft, not an answer: `grounded()` in `engine.py` rejects it if any sentence uses two or more content words that come from neither the claim record, the guidance fixture, nor a fixed list of conversational words (this catches invented policies or general knowledge), if it contains a number, date, or case ID absent from the record, omits a required fact (for example the missing documents or the paid amount), promises approval or payment, claims receipt, or says the agent took an action. A rejected or missing draft falls back to the fixture-based template. Preferred names are conversation preferences, separate from the verified policyholder identity.
 
 For a resolved case, the backend makes at most **one model request per ordinary user turn**. Before a case is open, the model is called only for a message that local rules cannot place (for example “any good laptops?”); it returns a single word, `claim` or `unrelated`, from a redacted message. The model never decides whether identity is verified, whether email consent was given, or which facts are true. Identity details, clear workflow commands, and obvious unrelated requests use no model call. Every caller message is redacted before it leaves the server: names (including the first name the agent used in its reply), email, phone, dates of birth, ID digits, and policy numbers. This keeps the Gemini 3.5 Flash-Lite demo within its project quota more comfortably. If the primary model is rate-limited, times out, or returns a server error, the same call tries Gemini 3.1 Flash-Lite. Authentication and request errors do not trigger a second model call. If both models are unavailable, the local bounded interpreter continues the SOP. These are separate per-model quotas, not extra requests against the primary quota. A conflicting identity claim pauses disclosure and routes to a representative; a preferred name request changes only how the caller is addressed.
 
@@ -100,7 +111,7 @@ See [Assessment verification](ASSESSMENT.md) for prompt-by-prompt checks, author
 python -m unittest discover -s tests -v
 ```
 
-The test suite (155 tests) covers the supplied Margaret scenario, early memory, three-field gating, wrong fields and lockout, natural date and name formats, aliases, refusal of individual fields, emotional recovery, escalation, representative authorization, claim narrowing and switching, grounded follow-ups, model-draft rejection and redaction, recipient restrictions, casual consent, session isolation, skip, and cross-policy access. `tests/test_conversation.py` holds the natural-language cases, including every adversarial prompt that exposed a problem on the hosted demo.
+The test suite (160 tests) covers the supplied Margaret scenario, early memory, three-field gating, wrong fields and lockout, natural date and name formats, aliases, refusal of individual fields, emotional recovery, escalation, representative authorization, claim narrowing and switching, grounded follow-ups, model-draft rejection and redaction, recipient restrictions, casual consent, session isolation, skip, and cross-policy access. `tests/test_conversation.py` holds the natural-language cases, including every adversarial prompt that exposed a problem on the hosted demo.
 
 ## Rebuild the public demo
 

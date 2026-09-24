@@ -1,0 +1,11 @@
+# Keeps the free Render demo awake so reviewers don't wait for a cold start.
+name: Keep demo awake
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl -fsS --max-time 90 https://sop-guided-claims-agent.onrender.com/api/health

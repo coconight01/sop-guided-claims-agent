@@ -76,6 +76,7 @@ function render(state) {
   chips("identityChips", (state.verified ? state.verified_fields : state.collected_fields).map(key => fieldLabels[key] || key));
   $("memorySignal").textContent = state.claim ? state.claim.case_id : state.memory_saved ? "Noted for after verification" : "Waiting for details";
   chips("memoryChips", state.claim ? [] : state.memory_tags || []);
+  chips("actionChips", state.human_transfer || state.closed ? [] : state.allowed_actions || []);
   const card = $("caseCard");
   card.replaceChildren();
   if (state.claim) {
@@ -135,9 +136,14 @@ async function send(message) {
   try {
     let res = await fetch("/api/chat", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({session_id: sessionId, message})});
     if (res.status === 404) {
+      // The service restarted or the chat expired: nothing from the old chat is kept, so say so plainly.
       const fresh = await (await fetch("/api/session")).json();
       sessionId = fresh.session_id;
       sessionStorage.setItem("northstar-session", sessionId);
+      $("messages").replaceChildren();
+      addMessage("assistant", "This conversation was reset because the service restarted or the chat expired. For your privacy, I'll need to verify your identity again.");
+      addMessage("user", message.trim());
+      $("messages").append(typing);
       res = await fetch("/api/chat", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({session_id: sessionId, message})});
     }
     const data = await res.json();

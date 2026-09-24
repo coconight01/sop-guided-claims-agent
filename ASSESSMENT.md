@@ -2,7 +2,7 @@
 
 The supplied starter ZIP contains only six synthetic fixture JSON files; all six are used, including `representatives.json` and `consent_scenarios.json` for the representative consent flow. All six files in this repository match the ZIP byte for byte. The fixture data is treated as test data; workflow rules come from the assessment request and are enforced in code.
 
-Run all checks with `python -m unittest discover -s tests -v`. The current suite has 155 passing tests, including HTTP API tests. The model is disabled for deterministic workflow tests; model JSON parsing, bounded claim choice, 429 fallback, draft grounding, and redaction of model input have separate focused tests.
+Run all checks with `python -m unittest discover -s tests -v`. The current suite has 160 passing tests, including HTTP API tests. The model is disabled for deterministic workflow tests; model JSON parsing, bounded claim choice, 429 fallback, draft grounding, and redaction of model input have separate focused tests.
 
 | Requirement | Prompt or action to try | Expected boundary and evidence |
 | --- | --- | --- |
@@ -13,6 +13,9 @@ Run all checks with `python -m unittest discover -s tests -v`. The current suite
 | Repeated wrong details | Give three details, then change the last four twice more with wrong values. | After three different failed combinations, verification stops and the caller is handed off; a later correct value does not open the claim. |
 | Wrong details | Give Margaret's name and DOB with last four `9999`. | No claim details; caller can correct the field or request a representative. |
 | Early memory | Before finishing verification, mention a denied healthcare claim from January. | Saves the hint without opening a claim; after verification it resolves to `CL-2048` without asking again. |
+| Later-phase details said early | Before verifying: `Hi, please call me Maggie. I want an email summary at the end. I already uploaded the pathology report last week.` Then verify and say `that's all`. | Stays in `VERIFY_ID` and confirms what it will remember; after verification it greets Maggie, opens `CL-2048` from the report mention and answers the upload without asking again; the closing offer recalls the email request but still waits for a yes. |
+| Allowed actions per phase | Watch "What I can do right now" in the test UI, or run `tests/test_phase_permissions.py`. | Each phase lists and enforces its own actions; sending email outside `POST_PROCESS` or reading another holder's claim raises in code. |
+| General knowledge from the model | With a model token, ask `what is a pathology report?` | A draft that explains it from outside knowledge (e.g. "tissue samples") is rejected; the reply uses the guidance fixture instead. |
 | Emotional refusal | `I already told you who I am. This is ridiculous. Just tell me why my claim was denied.` | Acknowledges frustration, explains why verification protects the caller, says which details are already held and how many remain, offers other fields or a representative; no claim detail. The acknowledgement varies on repeated turns. Repeated refusal marks a human handoff. |
 | Listed representative | `I'm David Chen, Margaret Chen's son... Her DOB is 1985-03-15, SSN last four 4472.`, then `any update?` | Policyholder's three details must match; consent request shows `pending` and no claim detail is shared; on `approved` the remembered claim opens and replies refer to "her claim". The email summary still goes to the policyholder's address and names the representative. |
 | Consent timeout | Same as above with `CONSENT_SCENARIO=timeout`. | Stays locked through every pending check, explains why consent is needed, then hands off to a human. |

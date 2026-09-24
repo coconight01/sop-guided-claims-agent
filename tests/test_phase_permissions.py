@@ -97,6 +97,17 @@ class PhasePermissionTests(unittest.TestCase):
         self.assertFalse(self.session.holder_id)
         self.assertEqual(self.session.email_result, "")
 
+    def test_action_table_is_enforced_in_code(self):
+        from engine import allow, send_summary, CLAIMS
+        with self.assertRaises(PermissionError):
+            send_summary(self.session)  # VERIFY_ID may not send email
+        self.say(VERIFY + ". My denied healthcare claim from January.")
+        with self.assertRaises(PermissionError):
+            allow(self.session, "send_summary")  # PROCESS_CASE may not either
+        with self.assertRaises(PermissionError):
+            allow(self.session, "read_own_claim", next(c for c in CLAIMS if c["case_id"] == "CL-3001"))
+        self.assertIn("answer from your claim record", self.session.public()["allowed_actions"])
+
 
 if __name__ == "__main__":
     unittest.main()

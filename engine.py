@@ -26,11 +26,37 @@ CLAIMS = fixture("claims.json")
 REPS = fixture("representatives.json")
 GUIDE = fixture("required_document_guideline.json")
 CONSENT = fixture("consent_scenarios.json")
+GUIDE_WORDS = set(re.findall(r"[a-z]+", json.dumps(GUIDE).lower()))
 PII = ("name", "dob", "phone", "email", "id_last4")
 PHASES = ("VERIFY_ID", "RESOLVE_INTENT", "PROCESS_CASE", "POST_PROCESS")
 FIELD_LABELS = {"name": "full name", "dob": "date of birth", "phone": "phone number",
                 "email": "email", "id_last4": "SSN or national ID last four"}
 MAX_VERIFY_FAILURES = 3
+# The SOP decides which actions each phase may take; code checks every action against this table.
+PHASE_ACTIONS = {
+    "VERIFY_ID": {"collect_identity", "remember_for_later", "explain_verification", "request_consent", "handoff"},
+    "RESOLVE_INTENT": {"list_own_claims", "select_own_claim", "handoff"},
+    "PROCESS_CASE": {"read_own_claim", "read_guidance", "select_own_claim", "list_own_claims", "handoff"},
+    "POST_PROCESS": {"read_own_claim", "send_summary", "skip_summary", "handoff"},
+}
+ACTION_LABELS = {
+    "collect_identity": "check identity details", "remember_for_later": "remember your request for later",
+    "explain_verification": "explain why verification is needed", "request_consent": "request policyholder consent",
+    "handoff": "hand off to a person", "list_own_claims": "list your claims", "select_own_claim": "open one of your claims",
+    "read_own_claim": "answer from your claim record", "read_guidance": "share document guidance",
+    "send_summary": "email a summary (with your consent)", "skip_summary": "skip the email",
+}
+CLAIM_ACTIONS = {"list_own_claims", "select_own_claim", "read_own_claim", "read_guidance", "send_summary"}
+
+
+def allow(session: "Session", action: str, claim: dict | None = None) -> None:
+    """Raise if the SOP phase, verification state, or claim ownership does not permit this action."""
+    if action not in PHASE_ACTIONS[session.phase]:
+        raise PermissionError(f"{action} is not allowed in {session.phase}")
+    if action in CLAIM_ACTIONS and not session.holder_id:
+        raise PermissionError(f"{action} requires verification")
+    if claim is not None and claim["party_id"] != session.holder_id:
+        raise PermissionError("claim belongs to another policyholder")
 MONTH_NAMES = ("january", "february", "march", "april", "may", "june", "july",
                "august", "september", "october", "november", "december")
 MONTH_RE = r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
@@ -118,6 +144,7 @@ class Session:
     refused_fields: list[str] = field(default_factory=list)
     name_parts: dict[str, str] = field(default_factory=dict)
     last_topics: list[str] = field(default_factory=list)
+    email_requested: bool = False
     stalled: int = 0
     human_offered: bool = False
     # Authorized representative flow: listed rep + policyholder's 3 PII + policyholder consent.
@@ -151,6 +178,8 @@ class Session:
             "memory_saved": bool(self.case_hint or self.intent_hint),
             "memory_tags": memory_tags(self),
             "representative": self.rep_name if verified or self.consent_status else "",
+            "allowed_actions": [ACTION_LABELS[a] for a in sorted(PHASE_ACTIONS[self.phase])
+                                if a != "request_consent" or self.rep_name],
             "candidates": [f"{c['case_id']} · {c['case_type']} · {c['status']}" for c in CLAIMS
                            if verified and self.phase == "RESOLVE_INTENT" and c["case_id"] in self.candidate_ids],
             "consent_status": self.consent_status,
@@ -518,10 +547,25 @@ def without_identity(text: str) -> str:
                   " ", text, flags=re.I)
 
 
+def remember_for_later(text: str, s: Session) -> list[str]:
+    """Keep requests that belong to a later phase (name to use, email summary wish) without acting on them yet."""
+    notes = []
+    name = re.search(r"\b(?:please\s+)?call me\s+([A-Za-z][a-z'-]{1,29})\b", text, re.I)
+    if name and name.group(1).lower() not in NAME_STOP:
+        s.preferred_name, s.preferred_name_pending = name.group(1).title(), True
+        notes.append("name")
+    if s.phase != "POST_PROCESS" and re.search(
+            r"\b(?:e-?mail)\b[^.?!]{0,30}\b(?:summary|recap|copy)\b|\bsend me (?:a |the )?(?:summary|recap)\b|\bemail me\b", norm(text)):
+        s.email_requested = True
+        notes.append("email")
+    return notes
+
+
 def detect_hint(text: str, session: Session) -> None:
     clean = without_identity(text)
     low = norm(clean)
-    if re.search(r"claim|denied|denial|appeal|reimburse|covered|documents|status|payment|rejected", low):
+    if re.search(r"claim|denied|denial|appeal|reimburse|covered|documents?|status|payment|rejected|report|upload\w*|"
+                 r"submitted|summited|paperwork|office note", low):
         session.intent_hint = clean[:500]
     if not session.case_hint and claim_clues(clean):
         session.case_hint = clean[:500]
@@ -631,7 +675,8 @@ def choose_claim(text: str, session: Session, model: ModelClient) -> tuple[dict 
     if len(filtered) == 1:
         return filtered[0], filtered
     if len(filtered) > 1:
-        low = norm(text)
+        # Remembered hints count too: "I already uploaded the pathology report" points at the claim that needs it.
+        low = norm(text if clues else " ".join((session.case_hint, session.intent_hint, text)))
         doc_hit = [c for c in filtered if any(w in low for d in c.get("documents_needed", []) for w in d.split() if len(w) > 4)]
         active = [c for c in filtered if c["status"] != "closed"]
         if len(doc_hit) == 1:
@@ -660,6 +705,7 @@ def claim_list(claims: list[dict]) -> str:
 
 
 def select_case(s: Session, claim: dict) -> None:
+    allow(s, "select_own_claim", claim)
     s.case_id = claim["case_id"]
     s.candidate_ids = []
     if s.case_id not in s.discussed_case_ids:
@@ -955,6 +1001,35 @@ def case_facts(claim: dict) -> dict:
     return facts
 
 
+# Words a grounded reply may use besides the claim record and the guidance fixture: conversation, not facts.
+CONVERSATION_WORDS = set("""
+understand understanding frustrating frustration stressful stress worrying worried sorry help helpful happy glad please
+thank thanks welcome know like would could should want wanted need needs needed sure able unable cannot still also however
+additionally simply currently right today first next then once after before while until again only just more other
+another anything something else further directly instead available record records recorded system shows show check
+checked checking review reviewed reviewing reviews representative representatives human person people connect speak talk
+contact reach hand over question questions details detail information options option remains remain possible whether
+confirm confirmed promise predict decision decisions approve approved approval outcome payment payments paid pay amount
+dollars zero total expected maximum allowed status open closed denied denial reason reasons because missing include
+included including submit submitted submitting send sent upload uploaded uploading portal link copy copies provider
+providers doctor office clinic hospital lab deadline appeal appeals passed period timeframe time week weeks days business
+usually average longer claim claims case policy policyholder healthcare medical dental auto filed date dated access
+authorized authorization consent spouse family member privacy private protect protected their these those this that there
+here with from into your yours about what which when where have been being will were they them than each every some
+make made take takes taking getting obtain request requested ask asking tell explain share give keep look looking find
+found work works prepare preparing ready receive received receipt based regarding related assist assistance support team
+might must current currently recently difficult away explore exploring note notes documents document file files report
+reports pathology requested requirements required requires process processing processed started start resolve resolved
+submission submissions mail fax online steps step completed complete readable legible clear clearly ensure sure want
+hard really phone number call calls discuss discussed someone able course depends late reconsideration verified
+verification identity email summary earlier mentioned says said
+""".split()) | set(MONTH_NAMES)
+
+
+def ungrounded_words(sentence: str, vocabulary: set[str]) -> list[str]:
+    return [w for w in re.findall(r"[a-z]+", sentence.lower()) if len(w) >= 4 and w not in vocabulary]
+
+
 def numbers_in(text: str) -> set[float]:
     return {float(n.replace(",", "")) for n in re.findall(r"\d+(?:,\d{3})*(?:\.\d+)?", text)}
 
@@ -977,6 +1052,11 @@ def grounded(reply: str, claim: dict, topics: list[str], facts: dict, missing: s
             return False
         if re.search(r"\bi(?:'ve| have|'ll| will| just)? (?:sent|submitted|escalated|filed|updated|approved|scheduled|"
                      r"transferred|forwarded|emailed|reopened)\b", sentence):
+            return False
+    # Every sentence (except a short empathy lead) must be built from record, guidance, or conversation words.
+    vocabulary = CONVERSATION_WORDS | set(re.findall(r"[a-z]+", json.dumps(facts).lower())) | GUIDE_WORDS
+    for sentence in re.split(r"(?<=[.!?])\s+", reply):
+        if not EMPATHY_LEAD.fullmatch(sentence.strip() + " ") and len(ungrounded_words(sentence, vocabulary)) >= 2:
             return False
     if deadline_passed(claim):
         deadline = date.fromisoformat(claim["appeal_deadline"])
@@ -1068,6 +1148,7 @@ def followup_topics(text: str, last: list[str], claim: dict) -> list[str]:
 
 
 def case_response(session: Session, claim: dict, text: str, model: ModelClient) -> tuple[str, bool]:
+    allow(session, "read_own_claim", claim)
     previous = next((t["text"] for t in reversed(session.turns) if t["role"] == "assistant"), "")
     facts = case_facts(claim)
     followup = followup_topics(text, session.last_topics, claim) or (
@@ -1229,6 +1310,7 @@ def is_closing(text: str) -> bool:
 
 
 def send_summary(session: Session) -> str:
+    allow(session, "send_summary")
     holder = next(h for h in HOLDERS if h["party_id"] == session.holder_id)
     recipient = holder["email"]
     body = summary(session)
@@ -1337,6 +1419,7 @@ def representative_turn(s: Session, text: str, model: ModelClient, new_rep: bool
         return transfer(s, "Those details belong to a policyholder you aren't listed for, so I can't continue. I've marked "
                         "this for a human representative who can check authorization.")
     if holder:
+        allow(s, "request_consent")
         s.consent_status, _ = consent_poll(s)
         if s.consent_status == "approved":
             return approve_representative(s, text, model)
@@ -1395,6 +1478,8 @@ def verify_turn(s: Session, text: str, model: ModelClient) -> str:
         return representative_turn(s, text, model, new_rep=True)
     if s.rep_name:
         return representative_turn(s, text, model)
+    allow(s, "collect_identity")
+    later = remember_for_later(text, s)
     before = dict(s.fields)
     notes = extract_fields(text, s)
     bare = re.fullmatch(r"(?:sorry,?\s+|it'?s\s+|this is\s+|i'?m\s+)?([a-z][a-z'.-]+(?:\s+[a-z][a-z'.-]+){1,2})[.!]?", text.strip(), re.I)
@@ -1410,7 +1495,8 @@ def verify_turn(s: Session, text: str, model: ModelClient) -> str:
         s.holder_id = holder["party_id"]
         s.phase = "RESOLVE_INTENT"
         s.refusal_count = 0
-        first = s.fields.get("name", "").split()[0] if "name" in s.fields else ""
+        first = s.preferred_name or (s.fields.get("name", "").split()[0] if "name" in s.fields else "")
+        s.preferred_name_pending = False
         note = f"Thank you{', ' + first if first else ''}, you're verified. "
         if s.case_hint or s.intent_hint:
             return note + resolve(s, text, model, remembered=True)
@@ -1480,6 +1566,10 @@ def verify_turn(s: Session, text: str, model: ModelClient) -> str:
         parts.append("Hi, thanks for reaching out.")
     elif kind == "how_are_you":
         parts.append("I'm doing well, thanks for asking.")
+    if "name" in later:
+        parts.append(f"Sure, I'll call you {s.preferred_name}.")
+    if "email" in later:
+        parts.append("I'll remember that you'd like an email summary at the end.")
     if new:
         parts.append(f"Thanks, I've got your {join_words([FIELD_LABELS[k] for k in new])}.")
     if "full_ssn" in notes:
@@ -1488,7 +1578,8 @@ def verify_turn(s: Session, text: str, model: ModelClient) -> str:
         parts.append("For phone, I need the full number on your record, not just the last digits.")
     if "name_part" in notes:
         parts.append(f"Could you also share your {'last' if 'first' in s.name_parts else 'first'} name?")
-    if local_topics(text) != ["clarify"] or re.search(r"\b(?:was it|did (?:they|you)|is it|yes or no)\b", low):
+    asking = "?" in text or re.search(r"\btell me\b|\bexplain\b|^(?:why|what|how|when|was|did|is|can|will)\b", low)
+    if asking and (local_topics(text) != ["clarify"] or re.search(r"\b(?:was it|did (?:they|you)|is it|yes or no)\b", low)):
         previous = next((t["text"] for t in reversed(s.turns[:-1]) if t["role"] == "assistant"), "")
         if "can't share or confirm" not in previous:
             parts.append("I can't share or confirm any claim details until you're verified.")
@@ -1520,6 +1611,8 @@ def verify_turn(s: Session, text: str, model: ModelClient) -> str:
 
 def case_turn(s: Session, text: str, model: ModelClient) -> str:
     low = norm(text)
+    if re.search(r"\b(?:at the end|later|when we'?re done|afterwards)\b", low):
+        remember_for_later(text, s)
     wants_email = re.search(r"\b(?:email (?:me )?(?:a |the )?summary|send (?:me )?(?:a |the )?summary|email (?:it|that) to me)\b", low)
     if wants_email or is_closing(text):
         s.phase = "POST_PROCESS"
@@ -1530,6 +1623,10 @@ def case_turn(s: Session, text: str, model: ModelClient) -> str:
                         "Would you like me to send it there or skip?")
             s.closed = True
             return "I can email a summary of what we discussed, the claim status, and next steps. " + send_summary(s)
+        if s.email_requested:
+            return ("Glad I could help. Earlier you asked for an email summary of what we discussed, the claim status, "
+                    "and next steps. Shall I send it now to the email on your policy record? You can say \"send it\" "
+                    "or \"skip\".")
         return ("Glad I could help. Before we finish, would you like an email summary of what we discussed, the claim "
                 "status, and next steps? It goes to the email on your policy record. You can say \"send it\" or \"skip\".")
     own = [c for c in CLAIMS if c["party_id"] == s.holder_id]
@@ -1673,6 +1770,7 @@ def _respond(s: Session, text: str, model: ModelClient) -> str:
         question = local_topics(text) != ["clarify"] or re.search(r"\bCL[-\s]?\d{4}\b|\bclaims?\b", text, re.I)
         decision = "" if question else consent_decision(text)
         if decision == "skip":
+            allow(s, "skip_summary")
             s.closed = True
             return "Understood. I won't send an email summary. Thank you for contacting claims support."
         if decision == "send":

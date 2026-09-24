@@ -615,6 +615,40 @@ class ConversationTests(unittest.TestCase):
         answer = self.say("what if I only have the office note but not the pathology report")
         self.assertIn("pathology report is missing", answer)
 
+    # ---- Cross-phase memory and stricter grounding
+
+    def test_later_phase_requests_are_remembered_through_verification(self):
+        first = self.say("Hi, please call me Maggie. I want an email summary at the end. "
+                         "I already uploaded the pathology report last week.")
+        self.assertIn("call you Maggie", first)
+        self.assertIn("email summary at the end", first)
+        self.assertEqual(self.session.phase, "VERIFY_ID")
+        verified = self.say("Margaret Chen, DOB 1985-03-15, SSN 4472")
+        self.assertIn("Thank you, Maggie", verified)
+        self.assertEqual(self.session.case_id, "CL-2048")
+        self.assertIn("can't confirm", verified)
+        self.assertIn("Earlier you asked for an email summary", self.say("thats all"))
+        self.assertIn("Demo outbox", self.say("yes"))
+
+    def test_model_general_knowledge_is_rejected(self):
+        self.open_denied_claim()
+        bad = "A pathology report is a document from a lab that details the examination of tissue samples."
+        self.model_reply(bad, topics=("document_detail",))
+        self.assertIn("specimen details", self.say("what is a pathology report?"))
+
+    def test_model_invented_policy_is_rejected(self):
+        self.open_denied_claim()
+        self.model_reply("Account details are typically limited to the registered member for privacy reasons.",
+                         topics=("status",))
+        self.assertNotIn("typically", self.say("who else can see this?"))
+
+    def test_harmless_paraphrase_is_accepted(self):
+        self.open_denied_claim()
+        good = ("It can be really hard when the clinic is hard to reach by phone. You can ask the hospital or lab to "
+                "resend the pathology report directly, and a human representative can review manual options with you.")
+        self.model_reply(good, topics=("alternatives",))
+        self.assertEqual(self.say("the clinic never answers, what now?"), good)
+
     # ---- Model phrasing is accepted only when grounded
 
     def model_reply(self, reply, topics=("denial_reason",)):
