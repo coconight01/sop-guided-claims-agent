@@ -62,7 +62,7 @@ class PhasePermissionTests(unittest.TestCase):
 
     def test_resolve_phase_model_cannot_pick_another_holders_claim(self):
         self.say(VERIFY)
-        answer = self.say("the healthcare one")
+        answer = self.say("the one I asked about last time")
         self.assertIn("select_claim", self.used("RESOLVE_INTENT"))
         self.assertNotEqual(self.session.case_id, "CL-3001")
         self.assertNotIn("CL-3001", answer)

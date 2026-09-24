@@ -54,7 +54,7 @@ STATUS_CLUES = (("denied", r"denied|denial|deny|rejected|declined|turned down"),
 CLAIM_WORDS = (r"\bcl[- ]?\d{4}\b|\b(?:claims?|insurance|insured|policy|denial|denied|appeal|documents?|report|payment|paid|"
                r"verification|verify|identity|status|coverage|covered|deductible|reimburse\w*|submit\w*|summited|upload\w*|"
                r"adjuster|representative|pathology|portal|case|email|summary|missing|office note|net pay|net fee|"
-               r"dob|ssn|birth|phone|name|car|auto|vehicle|accident|dental|dentist|medical|hospital|doctor|"
+               r"dob|ssn|birth|phone|name|last four|last 4|social|pii|national id|car|auto|vehicle|accident|dental|dentist|medical|hospital|doctor|"
                r"deadline|refund|money|bill|office|contact)\b")
 WEAK_REFERENCES = r"\b(?:that|this|it|them|those|next|you need|need from me|help me|what now|why)\b"
 OFF_TOPIC_RE = re.compile(
@@ -335,7 +335,8 @@ def shouting(text: str) -> bool:
 def emotion_of(text: str) -> str:
     low = norm(text)
     if (re.search(r"ridiculous|angry|furious|unacceptable|frustrat|already told|upset|annoyed|useless|waste of (?:my )?time|"
-                  r"\bstupid\b|terrible|awful|fed up|sick of|\bwtf\b|\bdamn\b|\bpissed\b|not satisfied|still waiting", low)
+                  r"\bstupid\b|terrible|awful|fed up|sick of|\bwtf\b|\bdamn\b|\bpissed\b|not satisfied|still waiting|"
+                  r"what'?s the point|why bother|no point|give up|hopeless", low)
             or text.count("!") >= 3 or shouting(text)):
         return "frustrated"
     if re.search(r"worried|anxious|scared|stress\w*|afraid|overwhelmed|panic|can'?t afford|cannot afford|nervous|desperate|"
@@ -576,11 +577,13 @@ def choose_claim(text: str, session: Session, model: ModelClient) -> tuple[dict 
         own = [c for c in own if c["case_id"] == "CL-" + explicit[-1]]
         return (own[0] if len(own) == 1 else None), own
     pool = [c for c in own if c["case_id"] in session.candidate_ids] or own
-    ordinal = re.search(r"\b(first|second|third|fourth|1st|2nd|3rd|4th)\b|\b(?:number|option|#)\s*([1-4])\b", norm(text))
-    if ordinal and session.candidate_ids:
-        index = int(ordinal.group(2)) - 1 if ordinal.group(2) else (
-            ["first", "second", "third", "fourth"].index(ordinal.group(1)) if ordinal.group(1).isalpha()
-            else int(ordinal.group(1)[0]) - 1)
+    ordinal = re.search(r"\b(?:the\s+)?(first|second|third|fourth|1st|2nd|3rd|4th)(?:\s+one)?\s*[.!?]*$"
+                        r"|\b(?:the\s+)(first|second|third|fourth|1st|2nd|3rd|4th)\s+(?:one|claim)\b"
+                        r"|\b(?:number|option|#)\s*([1-4])\b", norm(text))
+    if ordinal and session.candidate_ids and not clues:
+        word = ordinal.group(1) or ordinal.group(2)
+        index = int(ordinal.group(3)) - 1 if ordinal.group(3) else (
+            ["first", "second", "third", "fourth"].index(word) if word.isalpha() else int(word[0]) - 1)
         if index < len(pool):
             return pool[index], [pool[index]]
     if not clues and not session.candidate_ids:
@@ -607,7 +610,7 @@ def choose_claim(text: str, session: Session, model: ModelClient) -> tuple[dict 
         filtered = pool
     if len(filtered) == 1:
         return filtered[0], filtered
-    if len(filtered) > 1 and model.enabled:
+    if len(filtered) > 1 and model.enabled and not clues:
         choice = model.select_claim(model_safe_text(text, session=session), [safe_claim(c) for c in filtered])
         match = next((c for c in filtered if c["case_id"] == choice), None)
         if match:
@@ -640,6 +643,11 @@ def resolve(s: Session, text: str, model: ModelClient, remembered: bool = False)
             return ("I don't see a claim matching that description on the policy. Here is what I can see: "
                     + claim_list(own) + ". Which one would you like to discuss?")
         s.candidate_ids = [c["case_id"] for c in candidates]
+        if len(candidates) == 2:
+            a, b = candidates
+            return (f"Just to open the right one: do you mean {a['case_id']} ({a['case_type']}, filed "
+                    f"{fmt_date(a['created_at'])}, {a['status']}) or {b['case_id']} ({b['case_type']}, filed "
+                    f"{fmt_date(b['created_at'])}, {b['status']})?")
         lead = f"I see {len(candidates)} claims that could match: " if len(candidates) < len(own) else \
             f"I see {len(candidates)} claims on the policy: "
         return lead + claim_list(candidates) + ". Which one would you like to discuss?"
@@ -690,7 +698,8 @@ def local_topics(text: str) -> list[str]:
     if any(x in low for x in ("don't have", "do not have", "can't get", "cannot get", "alternative", "substitute")) or (
             "instead" in low and re.search(r"document|report|note|file|photo|estimate", low)):
         topics.append("alternatives")
-    if re.search(r"\b(?:what (?:do|should|can) i do|what now|next steps?|what happens (?:now|next)|how (?:do|can) i fix|what can be done)\b", low):
+    if re.search(r"\b(?:what (?:do|should|can) i do|what now|next steps?|what happens (?:now|next)|how (?:do|can) i fix|what can be done|"
+                 r"what'?s the point|why bother|no point|give up)\b", low):
         topics.append("next_steps")
     if any(x in low for x in ("status", "progress", "outcome", "update", "what's going on", "what is going on", "where is my", "where's my")):
         topics.append("status")
@@ -700,11 +709,16 @@ def local_topics(text: str) -> list[str]:
     if re.search(r"\bwaive\w*|\bexception\b|\bskip (?:the )?(?:documents?|requirement)|\bwithout (?:the )?(?:documents?|report|note)|"
                  r"\boverride\b|\bbend the rules?\b", low):
         topics.insert(0, "exception")
-    if re.search(r"\bwhat(?:'s| is| even is| exactly is)\s+(?:a|an|the)\s+(?:pathology|office note|diagnosis|repair estimate|report|note)", low):
+    if re.search(r"\bwhat(?:'s| is| even is| exactly is)\s+(?:a|an|the)\s+(?:pathology|office note|diagnosis|repair estimate|report|note)"
+                 r"|\bwhat (?:does|do)\s+(?:a |an |the )?(?:pathology|office note|diagnosis|report|note)\b[\w ]{0,20}\bmean\b", low):
         topics.insert(0, "document_detail")
     if re.search(r"\b(?:i have|i've got|i got|but i have|i do have|i only have)\b[^.?!]{0,40}\b(?:payment|receipt|bill|invoice|"
                  r"statement|proof)\b", low):
         topics = ["other_documents"] + [t for t in topics if t not in ("payment", "other_documents")]
+    if re.search(r"never (?:answer|respond|call)|not (?:answering|responding)|won'?t (?:answer|respond|give|send)|"
+                 r"can'?t (?:reach|get hold of|get through)|cannot reach|refus\w* to (?:give|send)|"
+                 r"didn'?t (?:give|send)|won'?t release|no one (?:answers|picks up)", low):
+        topics = ["provider_unresponsive"] + [t for t in topics if t not in ("contact", "how_to_get_documents")]
     if re.search(r"\bhow (?:do|can|should) i (?:get|obtain|request|ask for)\b|\bwhere (?:do|can) i get\b", low):
         topics.insert(0, "how_to_get_documents")
     if "alternatives" in topics and "documents" in topics:
@@ -809,6 +823,11 @@ def topic_answer(claim: dict, topics: list[str], text: str = "") -> str:
                 parts.append(f"The record doesn't list anything you need to send for {cid}; it is still in progress.")
             else:
                 parts.append(f"{cid} is {claim['status']}, and the record shows nothing outstanding.")
+        elif topic == "provider_unresponsive" and docs:
+            parts.append("If the doctor's office isn't responding, you can also ask the hospital or lab that ran the test "
+                         "to resend the report directly, and ask the clinic for a visit summary or discharge paperwork "
+                         "in place of the full office note. If none of those can be obtained, a human representative "
+                         "should review manual options with you; just say \"representative\".")
         elif topic == "how_to_get_documents" and docs:
             parts.append(f"Contact the hospital, lab, or treating provider and ask for a replacement copy of "
                          f"{doc_phrase(claim)}, or ask them to send it directly; if the clinic can fax or upload the office "
@@ -908,6 +927,9 @@ def grounded(reply: str, claim: dict, topics: list[str], facts: dict) -> bool:
         return False
     if re.search(r"\b(?:final|permanent|irreversible|closed for good)\b", low) and claim["status"] != "closed":
         return False
+    if re.search(r"\b(?:cannot|can't|can not|won't|will not) (?:be )?(?:appeal|submit|file|reopen|reconsider)\w*|"
+                 r"no longer (?:possible|eligible|able)|not eligible|no (?:further )?options?\b", low):
+        return False
     if "payment" in topics and float(claim["net_pay"]) not in numbers_in(reply):
         return False
     if {"review_timing", "submission_timing"} & set(topics) and docs and "week" not in low:
@@ -915,10 +937,21 @@ def grounded(reply: str, claim: dict, topics: list[str], facts: dict) -> bool:
     return True
 
 
-def without_repeats(body: str, previous: str, keep_deadline: bool) -> str:
+EMPATHY_LEAD = re.compile(r"^\s*(?:I (?:completely |totally |really |truly )?(?:understand|hear|know|can hear|can see)|"
+                          r"I'm (?:so |really )?sorry|That sounds)[^.!?]*[.!?]\s*", re.I)
+
+
+def support_prompt(claim: dict) -> str:
+    if claim.get("documents_needed"):
+        return (f"The most useful next step is still getting {doc_phrase(claim)} to the claims team. A human "
+                "representative can also review what options remain; just say \"representative\" if you'd like that.")
+    return "I can explain the status or payment, or connect you with a human representative. What would help most?"
+
+
+def without_repeats(body: str, previous: str, keep_deadline: bool, deadline_heard: bool = False) -> str:
     """Drop sentences the caller just heard (same fact, or the deadline again) unless nothing else is left."""
     heard = {re.sub(r"\W+", " ", x.lower()).strip() for x in re.split(r"(?<=[.!?])\s+", previous)}
-    heard_deadline = "deadline" in previous.lower()
+    heard_deadline = deadline_heard or "deadline" in previous.lower()
     sentences = re.split(r"(?<=[.!?])\s+", body)
     kept = [x for x in sentences
             if re.sub(r"\W+", " ", x.lower()).strip() not in heard
@@ -985,7 +1018,14 @@ def case_response(session: Session, claim: dict, text: str, model: ModelClient) 
     session.last_topics = topics
     reply = route.get("reply", "")
     body = reply if from_model and reply and grounded(reply, claim, topics, facts) else lead + topic_answer(claim, topics, text)
-    body = without_repeats(body, previous, keep_deadline="appeal" in topics)
+    history = " ".join(t["text"] for t in session.turns if t["role"] == "assistant")
+    body = without_repeats(body, previous, keep_deadline="appeal" in topics, deadline_heard="deadline" in history.lower())
+    sentences = re.split(r"(?<=[.!?])\s+", body)
+    if (len(sentences) > 1 and emotion_of(text) == "neutral" and EMPATHY_LEAD.match(sentences[0])
+            and EMPATHY_LEAD.match(previous)):
+        body = " ".join(sentences[1:])
+    if len(EMPATHY_LEAD.sub("", body).strip()) < 60:
+        body = body.rstrip() + " " + support_prompt(claim)
     if emotion == "frustrated" and not session.human_offered and (
             session.emotion_streak >= 1 or shouting(text) or text.count("!") >= 3):
         session.human_offered = True
@@ -1325,8 +1365,22 @@ def verify_turn(s: Session, text: str, model: ModelClient) -> str:
         return (lead + f"Thanks. Those details don't match a single policyholder record together, so I can't open a claim "
                 f"yet. I have your {held_details(s)}{policy}. If something was mistyped, just send the corrected value "
                 "(for example, \"my DOB is ...\"), or I can connect you with a human representative.")
+    field_question = re.search(r"\bwhat(?:'s| is| are| does)\s+(?:a |an |the |my )?(last four|last 4|ssn|social|national id|"
+                               r"id last four|dob|pii)\b", low)
+    if field_question:
+        term = field_question.group(1)
+        meaning = ("your date of birth" if term == "dob" else "personal details such as your name, date of birth, phone, "
+                   "or email" if term == "pii" else "the last four digits of your Social Security number (or national "
+                   "ID number)")
+        return (lead + f"Good question. That means {meaning}. If you'd rather not share it, your phone number or email "
+                "works too. " + (ask_for_details(s) if s.fields else "I need any three of: full name, date of birth, "
+                "phone, email, or those last four digits."))
+    if emotion_of(text) == "confused" and not s.fields:
+        return (lead + "No problem. Before I can look at your claim, I just need to confirm it's really you. The easiest "
+                "way is to tell me three things, for example your full name, your date of birth, and your phone "
+                "number. You can send them one at a time.")
     parts = [lead.strip()]
-    kind = smalltalk(text)
+    kind = smalltalk(text) or ("greeting" if re.match(r"^(?:hi|hello|hey|good (?:morning|afternoon|evening))\b", low) else "")
     if kind == "greeting":
         parts.append("Hi, thanks for reaching out.")
     elif kind == "how_are_you":

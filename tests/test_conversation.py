@@ -139,7 +139,7 @@ class ConversationTests(unittest.TestCase):
     def test_narrowing_then_recency(self):
         self.say(VERIFY)
         self.assertIn("4 claims", self.say("I have a question about my claim"))
-        self.assertIn("2 claims", self.say("the healthcare one"))
+        self.assertIn("do you mean CL-2048", self.say("the healthcare one"))
         self.say("the recent one")
         self.assertEqual(self.session.case_id, "CL-2048")
 
@@ -450,6 +450,56 @@ class ConversationTests(unittest.TestCase):
         self.say("what should I do next?")
         self.assertNotIn("deadline", self.say("ok what do I do then, next steps?"))
         self.assertIn("deadline", self.say("can I still appeal?"))
+
+    # ---- Multi-turn persona runs on the hosted demo
+
+    def test_described_claim_beats_list_position(self):
+        self.say(VERIFY + " - need status on everything")
+        self.say("the car one first")
+        self.assertEqual(self.session.case_id, "CL-2102")
+
+    def test_same_month_in_two_years_is_asked_not_guessed(self):
+        self.model.enabled = True
+        self.model._ask = lambda *a, **k: "CL-2048"
+        self.say("hello, a medical bill question")
+        self.say(VERIFY)
+        answer = self.say("the one from january i think")
+        self.assertIn("do you mean", answer)
+        self.assertEqual(self.session.phase, "RESOLVE_INTENT")
+
+    def test_unresponsive_provider_gets_alternatives(self):
+        self.open_denied_claim()
+        answer = self.say("ok but the doctor's office never answers the phone")
+        self.assertIn("hospital or lab", answer)
+        self.assertNotIn("contact details", answer)
+
+    def test_hopeless_turn_still_gets_a_next_step(self):
+        self.open_denied_claim()
+        self.say("can I still appeal??")
+        answer = self.say("so what's the point then")
+        self.assertIn("next step", answer)
+        self.assertGreater(len(answer), 80)
+
+    def test_model_cannot_say_no_appeal_is_possible(self):
+        self.open_denied_claim()
+        bad = "The appeal deadline of March 18, 2026 has passed. Because the deadline has passed, an appeal cannot be submitted."
+        self.model_reply(bad, topics=("appeal",))
+        self.assertNotEqual(self.say("can I still appeal??"), bad)
+
+    def test_field_names_are_explained(self):
+        self.say("my name is margaret chen")
+        answer = self.say("what is a last four")
+        self.assertIn("Social Security", answer)
+
+    def test_confused_caller_gets_simpler_wording(self):
+        first = self.say("hello dear, my grandson said to message here about a medical bill")
+        self.assertTrue(first.startswith("Hi"))
+        second = self.say("i dont understand what you need from me")
+        self.assertIn("confirm it's really you", second)
+
+    def test_what_does_a_document_mean(self):
+        self.open_denied_claim()
+        self.assertIn("specimen details", self.say("what does pathology mean"))
 
     # ---- Model phrasing is accepted only when grounded
 
