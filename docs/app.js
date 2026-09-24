@@ -94,7 +94,9 @@ function render(state) {
   }
   if (state.human_transfer || state.closed) quickActions([["Start a new conversation", ""]]);
   else if (state.phase === "VERIFY_ID") quickActions([["Try sample conversation", demoCaller], ["Why verify?", "Why do you need to verify my identity?"]]);
-  else if (state.phase === "RESOLVE_INTENT") quickActions([["Show my claims", "Which claims do I have?"]]);
+  else if (state.phase === "RESOLVE_INTENT") quickActions(state.candidates?.length
+    ? state.candidates.map(label => [label, label.split(" · ")[0]])
+    : [["Show my claims", "Which claims do I have?"]]);
   else if (state.phase === "PROCESS_CASE") quickActions([
     ...(state.claim?.status === "denied" ? [["Why was it denied?", "Why was it denied?"], ["What should I do next?", "What should I do next?"]] : [["What's the status?", "What's the status?"], ["Payment details", "How much was paid?"]]),
     ["That's all", "That's all, thanks."],

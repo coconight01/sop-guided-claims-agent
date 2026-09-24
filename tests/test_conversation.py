@@ -501,6 +501,73 @@ class ConversationTests(unittest.TestCase):
         self.open_denied_claim()
         self.assertIn("specimen details", self.say("what does pathology mean"))
 
+    # ---- Second persona round
+
+    def test_misspelled_then_corrected_name(self):
+        self.say("im so scared i cant pay the hospital bill, they denied everything")
+        self.say("margret chen")
+        self.assertEqual(self.session.fields.get("name"), "Margret Chen")
+        self.say("sorry Margaret Chen, born 15/03/1985")
+        self.assertEqual(self.session.fields.get("name"), "Margaret Chen")
+        self.say("phone 650 521 2836")
+        self.assertTrue(self.session.holder_id)
+        self.assertEqual(self.session.case_id, "CL-2048")
+
+    def test_stalled_verification_changes_the_ask(self):
+        self.say("my name is margaret chen")
+        self.say("what do i do")
+        answer = self.say("ok how do i send it")
+        self.assertIn("almost there", answer)
+        self.assertIn("representative", answer)
+
+    def test_question_picks_the_only_claim_it_applies_to(self):
+        self.say("hello dear, my grandson said to message here about a medical bill")
+        self.say(VERIFY)
+        self.assertEqual(self.session.phase, "RESOLVE_INTENT")
+        self.assertEqual(len(self.session.public()["candidates"]), 2)
+        answer = self.say("what does pathology mean")
+        self.assertEqual(self.session.case_id, "CL-2048")
+        self.assertIn("specimen", answer)
+
+    def test_repeated_either_or_question_is_rephrased(self):
+        self.say("hello, a medical bill question")
+        self.say(VERIFY)
+        self.say("what happened with it")
+        answer = self.say("the one from january i think")
+        self.assertIn("newer one", answer)
+        self.say("the newer one")
+        self.assertEqual(self.session.case_id, "CL-2048")
+
+    def test_deadline_question_gets_the_deadline(self):
+        self.open_denied_claim()
+        self.say("can my husband see this claim too?")
+        answer = self.say("what's the deadline")
+        self.assertIn("March 18, 2026", answer)
+
+    def test_family_access_request_is_answered_by_the_sop(self):
+        self.open_denied_claim()
+        answer = self.say("ok sorry. can my husband see this claim too?")
+        self.assertIn("authorized representative", answer)
+        self.assertTrue(self.session.holder_id)
+
+    def test_missing_document_is_the_one_answered(self):
+        self.open_denied_claim()
+        answer = self.say("what if I only have the office note but not the pathology report")
+        self.assertIn("pathology report is missing", answer)
+        self.assertNotIn("visit summary", answer)
+
+    def test_model_next_steps_must_name_documents(self):
+        self.open_denied_claim()
+        self.model_reply("The appeal deadline has passed. A representative can review whether any option remains.",
+                         topics=("next_steps",))
+        self.assertIn("pathology report", self.say("what can I do to help her"))
+
+    def test_verified_caller_without_claims(self):
+        answer = self.say("I'm Ava Lopez, DOB 1990-08-21, SSN last four 9180, calling about my claim status")
+        self.assertIn("don't see any claims", answer)
+        self.assertNotIn("see: .", answer)
+        self.assertIn("don't see any claims", self.say("the denied one"))
+
     # ---- Model phrasing is accepted only when grounded
 
     def model_reply(self, reply, topics=("denial_reason",)):

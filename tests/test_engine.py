@@ -165,7 +165,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.say("Call me Yuhan")
         self.assertEqual(len(calls), 1)
-        self.say("why!!!! I summited everything!")
+        self.say("why!!!! I summited everything!")  # a submission dispute is answered by code alone
+        self.assertEqual(len(calls), 1)
+        self.say("what documents are needed?")
         self.assertEqual(len(calls), 2)
         self.assertNotIn("Yuhan", calls[-1][1])
         self.say("That's all")

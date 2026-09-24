@@ -9,7 +9,7 @@ TOPICS = {
     "denial_reason", "status", "documents", "submission_method",
     "submission_dispute", "submission_timing", "review_timing", "appeal", "payment",
     "alternatives", "receipt_check", "document_detail", "next_steps", "outcome", "contact", "exception", "how_to_get_documents",
-    "other_documents", "clarify",
+    "other_documents", "provider_unresponsive", "access_request", "clarify",
 }
 EMOTIONS = {"neutral", "frustrated", "anxious", "confused"}
 

@@ -42,7 +42,8 @@ NAME_STOP = set(
     "and with calling about from here the a an policyholder really very so just not also still sorry trying "
     "looking having worried frustrated angry upset confused anxious scared fine good okay ok done back ready sure "
     "afraid tired waiting asking wondering in on at for to of my your is was dob date birth phone email ssn social "
-    "security policy claim please thanks thank but because i im i'm do you what calling".split()
+    "security policy claim please thanks thank but because i im i'm do you what calling hello hi hey there dear yes "
+    "no skip help sure bye".split()
 )
 TYPE_CLUES = (("auto", r"auto|car|vehicle|accident|collision|crash"),
               ("dental", r"dental|dentist|teeth|tooth"),
@@ -72,7 +73,7 @@ REFUSAL_RE = re.compile(
     r"\b(?:i refuse|refuse to|won'?t (?:give|share|tell|provide|verify)|will not (?:give|share|tell|provide|verify)|"
     r"not (?:giving|going to give|sharing|telling|providing)|don'?t want to (?:give|share|verify|tell|provide)|"
     r"rather not|skip (?:the )?verification|none of your business|why should i|just tell me|already told you|"
-    r"forget it|not doing this)\b")
+    r"forget it|not doing this|skip (?:it|this)|^skip)\b")
 OPENINGS = {
     "frustrated": ("I understand why this is frustrating.", "I hear you, and I'm sorry this has been such a hassle.",
                    "I know this is taking longer than you'd like."),
@@ -117,6 +118,7 @@ class Session:
     refused_fields: list[str] = field(default_factory=list)
     name_parts: dict[str, str] = field(default_factory=dict)
     last_topics: list[str] = field(default_factory=list)
+    stalled: int = 0
     human_offered: bool = False
     # Authorized representative flow: listed rep + policyholder's 3 PII + policyholder consent.
     rep_name: str = ""
@@ -149,6 +151,8 @@ class Session:
             "memory_saved": bool(self.case_hint or self.intent_hint),
             "memory_tags": memory_tags(self),
             "representative": self.rep_name if verified or self.consent_status else "",
+            "candidates": [f"{c['case_id']} · {c['case_type']} · {c['status']}" for c in CLAIMS
+                           if verified and self.phase == "RESOLVE_INTENT" and c["case_id"] in self.candidate_ids],
             "consent_status": self.consent_status,
             "claim": next((safe_claim(c) for c in CLAIMS if verified and c["case_id"] == self.case_id), None),
             "human_transfer": self.human_transfer,
@@ -228,8 +232,12 @@ def declared_name(text: str) -> str:
     for holder in HOLDERS:
         for name in [holder["name"], *holder.get("name_aliases", [])]:
             n = re.escape(name) + r"(?!\w)(?!'s)"
-            if (re.search(r"\b(?:my name is|i am|i'm|im|this is|it's|name is|name:?)(?:\s+the policyholder,?)?\s+" + n, text, re.I)
-                    or re.search(r"(?:^|[.;!?]\s+)" + n, text, re.I)) and not re.search(r"\b(?:not|isn't|is not)\s+" + re.escape(name), text, re.I):
+            m = re.search(r"(?<!\w)" + n, text, re.I)
+            if not m or re.search(r"\b(?:not|isn't|is not)\s+" + re.escape(name), text, re.I):
+                continue
+            before = text[max(0, m.start() - 30):m.start()].lower()
+            if not re.search(r"\b(?:my|her|his|their)\s+\w+\s*,?\s*$|\b(?:for|about|of|with|to|from|called|spoke|and|named)\s*$",
+                             before):
                 return name
     patterns = (
         re.compile(r"\b(?:my (?:full )?name is|name's)\s+([A-Za-z][A-Za-z'.-]*(?:\s+[A-Za-z][A-Za-z'.-]*){1,3})", re.I),
@@ -610,12 +618,29 @@ def choose_claim(text: str, session: Session, model: ModelClient) -> tuple[dict 
         filtered = pool
     if len(filtered) == 1:
         return filtered[0], filtered
+    if len(filtered) > 1:
+        low = norm(text)
+        doc_hit = [c for c in filtered if any(w in low for d in c.get("documents_needed", []) for w in d.split() if len(w) > 4)]
+        active = [c for c in filtered if c["status"] != "closed"]
+        if len(doc_hit) == 1:
+            return doc_hit[0], doc_hit
+        if len(active) == 1 and set(local_topics(text)) & ACTIVE_TOPICS:
+            return active[0], active
     if len(filtered) > 1 and model.enabled and not clues:
         choice = model.select_claim(model_safe_text(text, session=session), [safe_claim(c) for c in filtered])
         match = next((c for c in filtered if c["case_id"] == choice), None)
         if match:
             return match, filtered
     return None, filtered
+
+
+ACTIVE_TOPICS = {"denial_reason", "documents", "document_detail", "alternatives", "appeal", "how_to_get_documents",
+                 "submission_method", "submission_dispute", "receipt_check", "review_timing", "next_steps", "outcome",
+                 "submission_timing", "provider_unresponsive", "other_documents"}
+
+
+NO_CLAIMS = ("I don't see any claims on file for your policy. If you expected to see one, a human representative can "
+             "look into it; just say \"representative\". Is there anything else I can help with?")
 
 
 def claim_list(claims: list[dict]) -> str:
@@ -635,6 +660,8 @@ def resolve(s: Session, text: str, model: ModelClient, remembered: bool = False)
         text if local_topics(text) != ["clarify"] else s.pending_question or text)
     selected, candidates = choose_claim(text, s, model)
     own = [c for c in CLAIMS if c["party_id"] == s.holder_id]
+    if not own:
+        return NO_CLAIMS
     if not selected:
         if local_topics(text) != ["clarify"]:
             s.pending_question = text
@@ -643,6 +670,12 @@ def resolve(s: Session, text: str, model: ModelClient, remembered: bool = False)
             return ("I don't see a claim matching that description on the policy. Here is what I can see: "
                     + claim_list(own) + ". Which one would you like to discuss?")
         s.candidate_ids = [c["case_id"] for c in candidates]
+        previous = next((t["text"] for t in reversed(s.turns) if t["role"] == "assistant"), "")
+        if len(candidates) == 2 and previous.startswith(("Just to open the right one", "No problem")):
+            a, b = sorted(candidates, key=lambda c: c["created_at"], reverse=True)
+            return (f"No problem. Is it the newer one from {a['created_at'][:4]} that is {a['status']}, or the older one "
+                    f"from {b['created_at'][:4]} that is {b['status']}? You can say \"the newer one\", \"the older one\", "
+                    f"or the claim ID ({a['case_id']} or {b['case_id']}).")
         if len(candidates) == 2:
             a, b = candidates
             return (f"Just to open the right one: do you mean {a['case_id']} ({a['case_type']}, filed "
@@ -695,7 +728,8 @@ def local_topics(text: str) -> list[str]:
         topics.append("outcome")
     elif any(x in low for x in ("paid", "payment", "reimburse", "amount", "dollar", "money", "how much", "owe", "$")):
         topics.append("payment")
-    if any(x in low for x in ("don't have", "do not have", "can't get", "cannot get", "alternative", "substitute")) or (
+    if any(x in low for x in ("don't have", "do not have", "can't get", "cannot get", "alternative", "substitute")) or re.search(
+            r"\bonly have\b|\bbut not (?:the|a|my)\b|\bmissing (?:the|my)\b|\blost (?:the|my)\b", low) or (
             "instead" in low and re.search(r"document|report|note|file|photo|estimate", low)):
         topics.append("alternatives")
     if re.search(r"\b(?:what (?:do|should|can) i do|what now|next steps?|what happens (?:now|next)|how (?:do|can) i fix|what can be done|"
@@ -715,6 +749,9 @@ def local_topics(text: str) -> list[str]:
     if re.search(r"\b(?:i have|i've got|i got|but i have|i do have|i only have)\b[^.?!]{0,40}\b(?:payment|receipt|bill|invoice|"
                  r"statement|proof)\b", low):
         topics = ["other_documents"] + [t for t in topics if t not in ("payment", "other_documents")]
+    if re.search(r"\bcan (?:my|a|the) (?:husband|wife|spouse|partner|son|daughter|mom|mother|dad|father|family|kids?|"
+                 r"someone|friend)\b[^.?!]{0,30}\b(?:see|access|view|look at|call|talk|help|manage|handle)", low):
+        return ["access_request"]
     if re.search(r"never (?:answer|respond|call)|not (?:answering|responding)|won'?t (?:answer|respond|give|send)|"
                  r"can'?t (?:reach|get hold of|get through)|cannot reach|refus\w* to (?:give|send)|"
                  r"didn'?t (?:give|send)|won'?t release|no one (?:answers|picks up)", low):
@@ -724,6 +761,17 @@ def local_topics(text: str) -> list[str]:
     if "alternatives" in topics and "documents" in topics:
         topics.remove("documents")
     return topics[:3] or ["clarify"]
+
+
+def missing_doc(claim: dict, text: str) -> str:
+    """'I only have the office note but not the pathology report' -> 'pathology report'."""
+    low = norm(text)
+    for doc in claim.get("documents_needed", []):
+        words = [w for w in doc.split() if len(w) > 4] or doc.split()
+        if re.search(r"\b(?:not|no|without|missing|don'?t have|do not have|can'?t get|cannot get|lost)\s+(?:the |a |an |my |any )?"
+                     r"(?:\w+\s+){0,2}?(?:" + "|".join(map(re.escape, words)) + r")", low):
+            return doc
+    return ""
 
 
 def matching_guidance(claim: dict, text: str, category: str) -> list[str]:
@@ -823,6 +871,10 @@ def topic_answer(claim: dict, topics: list[str], text: str = "") -> str:
                 parts.append(f"The record doesn't list anything you need to send for {cid}; it is still in progress.")
             else:
                 parts.append(f"{cid} is {claim['status']}, and the record shows nothing outstanding.")
+        elif topic == "access_request":
+            parts.append("Right now I can only discuss this claim with you. Someone else can be helped here only if "
+                         "they're listed as an authorized representative on your policy and you approve their access; a "
+                         "human representative can help set that up.")
         elif topic == "provider_unresponsive" and docs:
             parts.append("If the doctor's office isn't responding, you can also ask the hospital or lab that ran the test "
                          "to resend the report directly, and ask the clinic for a visit summary or discharge paperwork "
@@ -850,7 +902,7 @@ def topic_answer(claim: dict, topics: list[str], text: str = "") -> str:
                 GUIDE["default_guidance"]["en"], f"Tell me which document you're preparing ({join_words(docs, 'or')}) "
                 "and I'll share what it should include."])
         elif topic == "alternatives" and docs:
-            specific = matching_guidance(claim, text, "document_alternative_guidance")
+            specific = matching_guidance(claim, missing_doc(claim, text) or text, "document_alternative_guidance")
             parts.extend(specific if len(specific) < len(docs) else [
                 GUIDE["document_alternative_guidance"]["default"]["en"],
                 f"If you tell me which one is hard to get ({join_words(docs, 'or')}), I can share specific options."])
@@ -893,7 +945,7 @@ def numbers_in(text: str) -> set[float]:
     return {float(n.replace(",", "")) for n in re.findall(r"\d+(?:,\d{3})*(?:\.\d+)?", text)}
 
 
-def grounded(reply: str, claim: dict, topics: list[str], facts: dict) -> bool:
+def grounded(reply: str, claim: dict, topics: list[str], facts: dict, missing: str = "") -> bool:
     """Accept model wording only when every fact in it is traceable to the claim record."""
     if not 20 <= len(reply) <= 900 or re.search(r"[\[\]{}<>@*#]|https?://", reply):
         return False
@@ -929,6 +981,10 @@ def grounded(reply: str, claim: dict, topics: list[str], facts: dict) -> bool:
         return False
     if re.search(r"\b(?:cannot|can't|can not|won't|will not) (?:be )?(?:appeal|submit|file|reopen|reconsider)\w*|"
                  r"no longer (?:possible|eligible|able)|not eligible|no (?:further )?options?\b", low):
+        return False
+    if "next_steps" in topics and docs and not any(doc in low for doc in docs):
+        return False
+    if "alternatives" in topics and missing and missing not in low:
         return False
     if "payment" in topics and float(claim["net_pay"]) not in numbers_in(reply):
         return False
@@ -970,6 +1026,9 @@ def without_repeats(body: str, previous: str, keep_deadline: bool, deadline_hear
 OPENING_RE = re.compile("|".join(re.escape(o) for group in OPENINGS.values() for o in group))
 
 
+CODE_TOPICS = {"submission_dispute", "access_request"}
+
+
 def followup_topics(text: str, last: list[str], claim: dict) -> list[str]:
     """A bare 'how...' / 'and then?' continues the previous answer instead of asking the caller to repeat."""
     low = norm(text).strip(" .?!\u2026")
@@ -994,7 +1053,8 @@ def followup_topics(text: str, last: list[str], claim: dict) -> list[str]:
 def case_response(session: Session, claim: dict, text: str, model: ModelClient) -> tuple[str, bool]:
     previous = next((t["text"] for t in reversed(session.turns) if t["role"] == "assistant"), "")
     facts = case_facts(claim)
-    followup = followup_topics(text, session.last_topics, claim)
+    followup = followup_topics(text, session.last_topics, claim) or (
+        local_topics(text) if local_topics(text)[0] in CODE_TOPICS else [])
     route = {} if followup else model.analyze_case(model_safe_text(text, (session.preferred_name,), session),
                                model_safe_text(previous, (session.preferred_name,), session), facts) if model.enabled else {}
     fallback = followup or local_topics(text)
@@ -1007,6 +1067,8 @@ def case_response(session: Session, claim: dict, text: str, model: ModelClient) 
         from_model = bool(route.get("topics")) and not (route.get("scope") == "unrelated")
     if unrelated:
         return "", True
+    if re.search(r"\b(?:deadline|appeal)\b", norm(text)) and "appeal" not in topics:
+        topics, from_model = ["appeal", *topics], False
     if "document_detail" in topics and "documents" in topics:
         topics = [topic for topic in topics if topic != "documents"]
     if claim["status"] == "denied" and "denial_reason" in topics and "status" in topics:
@@ -1017,14 +1079,15 @@ def case_response(session: Session, claim: dict, text: str, model: ModelClient) 
     session.topics_discussed = list(dict.fromkeys([*session.topics_discussed, *(t for t in topics if t != "clarify")]))
     session.last_topics = topics
     reply = route.get("reply", "")
-    body = reply if from_model and reply and grounded(reply, claim, topics, facts) else lead + topic_answer(claim, topics, text)
+    body = reply if from_model and reply and grounded(reply, claim, topics, facts, missing_doc(claim, text)) else lead + topic_answer(claim, topics, text)
     history = " ".join(t["text"] for t in session.turns if t["role"] == "assistant")
-    body = without_repeats(body, previous, keep_deadline="appeal" in topics, deadline_heard="deadline" in history.lower())
+    body = without_repeats(body, previous, keep_deadline="appeal" in topics or bool(re.search(r"deadline|appeal", norm(text))),
+                           deadline_heard="deadline" in history.lower())
     sentences = re.split(r"(?<=[.!?])\s+", body)
     if (len(sentences) > 1 and emotion_of(text) == "neutral" and EMPATHY_LEAD.match(sentences[0])
             and EMPATHY_LEAD.match(previous)):
         body = " ".join(sentences[1:])
-    if len(EMPATHY_LEAD.sub("", body).strip()) < 60:
+    if len(EMPATHY_LEAD.sub("", body).strip()) < 25:
         body = body.rstrip() + " " + support_prompt(claim)
     if emotion == "frustrated" and not session.human_offered and (
             session.emotion_streak >= 1 or shouting(text) or text.count("!") >= 3):
@@ -1230,7 +1293,7 @@ def representative_turn(s: Session, text: str, model: ModelClient, new_rep: bool
     if s.consent_status == "pending":
         status, exhausted = consent_poll(s)
         if status == "approved":
-            return approve_representative(s, text, model)
+            return (why if asked_why else "") + approve_representative(s, text, model)
         if exhausted:
             s.consent_status = "timeout"
             return transfer(s, lead + (why if asked_why else "") + "The policyholder hasn't approved the request yet, "
@@ -1267,8 +1330,8 @@ def representative_turn(s: Session, text: str, model: ModelClient, new_rep: bool
         parts.append(why)
     if "full_ssn" in notes:
         parts.append("Only the last four digits of the SSN are needed; please don't share the full number.")
-    parts.append("To continue, I need three matching details for the policyholder, then the policyholder's consent. "
-                 + ask_for_details(s).replace("any of your", "any of the policyholder's"))
+    parts.append(("To continue, I need three matching details for the policyholder, then the policyholder's consent. "
+                  if new_rep else "") + ask_for_details(s).replace("any of your", "any of the policyholder's"))
     return " ".join(x for x in parts if x)
 
 
@@ -1307,7 +1370,12 @@ def verify_turn(s: Session, text: str, model: ModelClient) -> str:
         return representative_turn(s, text, model)
     before = dict(s.fields)
     notes = extract_fields(text, s)
+    bare = re.fullmatch(r"(?:sorry,?\s+|it'?s\s+|this is\s+|i'?m\s+)?([a-z][a-z'.-]+(?:\s+[a-z][a-z'.-]+){1,2})[.!]?", text.strip(), re.I)
+    if ("name" not in s.fields and bare and not re.search(CLAIM_WORDS, low)
+            and not any(w.lower().strip(".") in NAME_STOP for w in bare.group(1).split())):
+        s.fields["name"] = " ".join(w[:1].upper() + w[1:] for w in bare.group(1).split())
     new = [k for k in PII if k in s.fields and before.get(k) != s.fields[k]]
+    s.stalled = 0 if new else s.stalled + 1
     had_hint = bool(s.case_hint or s.intent_hint)
     detect_hint(text, s)
     holder = verified_holder(s)
@@ -1401,7 +1469,13 @@ def verify_turn(s: Session, text: str, model: ModelClient) -> str:
     if s.policy_hint and (not s.policy_note_given or re.search(r"\b(?:three|3) (?:details|things|pieces)\b|that'?s (?:three|3)", low)):
         s.policy_note_given = True
         parts.append("Your policy number helps me find the record, but it doesn't count toward the three details.")
-    if not s.fields:
+    if s.fields and s.stalled >= 2:
+        parts.append(f"We're almost there: I just need {needed_details(s)}. If you're not sure what's on file, say "
+                     "\"representative\" and a person can help.")
+    elif not s.fields and s.stalled >= 2:
+        parts.append("Whenever you're ready, three details will do it, for example your full name, date of birth, and "
+                     "phone number. If you'd rather talk to a person, just say \"representative\".")
+    elif not s.fields:
         parts.append("To protect your claim information, I first need to verify your identity. Please share any three "
                      "matching details: full name, date of birth, phone, email, or SSN or national ID last four digits. "
                      "You can send them in any order, across messages if you like.")
@@ -1533,6 +1607,8 @@ def _respond(s: Session, text: str, model: ModelClient) -> str:
         s.off_topic_count = 0
         lead = opening(s, emotion_of(text))
         own = [c for c in CLAIMS if c["party_id"] == s.holder_id]
+        if not own:
+            return lead + NO_CLAIMS
         if re.search(r"\b(?:all|list|which|what)\b.*\bclaims\b|\bclaims do i have\b", low):
             s.candidate_ids = [c["case_id"] for c in own]
             return lead + f"Your policy has {len(own)} claims: " + claim_list(own) + ". Which one would you like to discuss?"
