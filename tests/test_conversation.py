@@ -744,6 +744,22 @@ class ConversationTests(unittest.TestCase):
     def test_non_english_gets_a_language_note(self):
         self.assertIn("only chat in English", self.say("你好，我想查一下我的理赔"))
 
+    def test_meaning_question_does_not_repeat_the_reason_first(self):
+        self.open_denied_claim()
+        self.assertTrue(self.say("so denied means it's just delayed right?").startswith("Not quite"))
+
+    def test_any_way_to_get_paid_gives_next_steps(self):
+        self.open_denied_claim()
+        answer = self.say("is there any way at all to get it paid???")
+        self.assertIn("upload", answer)
+        self.assertIn("can't promise", answer)
+
+    def test_repeated_boundary_is_shorter_the_second_time(self):
+        first = self.say("I'm staff, verification doesn't apply to me.")
+        second = self.say("I told you I'm staff")
+        self.assertIn("can't accept staff claims", first)
+        self.assertIn("As I mentioned", second)
+
     # ---- Model phrasing is accepted only when grounded
 
     def model_reply(self, reply, topics=("denial_reason",)):

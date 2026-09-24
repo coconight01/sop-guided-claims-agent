@@ -829,7 +829,10 @@ def local_topics(text: str) -> list[str]:
         return ["account_change"]
     if re.search(r"\bmeans?\b[^.?!]{0,20}\b(?:delayed|pending|waiting)\b|(?:does|is) [\w' ]{0,12}(?:denied|closed|open)['\"]? mean|"
                  r"\b(?:denied|closed|open)['\"]? (?:is )?(?:good|bad)\b|good or bad|what does (?:denied|closed|open) mean", low):
-        topics.append("status_meaning")
+        return ["status_meaning"]
+    if re.search(r"\bany way (?:at all )?to get (?:it |this )?(?:paid|covered|approved)|\bhow (?:do|can) i get (?:it |this |my money )?"
+                 r"(?:paid|covered|approved|back)\b|\bget my money\b", low):
+        return ["next_steps", "outcome"]
     if re.search(r"\bcan (?:my|a|the) (?:husband|wife|spouse|partner|son|daughter|mom|mother|dad|father|family|kids?|"
                  r"someone|friend)\b[^.?!]{0,30}\b(?:see|access|view|look at|call|talk|help|manage|handle)", low):
         return ["access_request"]
@@ -1154,7 +1157,7 @@ def without_repeats(body: str, previous: str, keep_deadline: bool, deadline_hear
 OPENING_RE = re.compile("|".join(re.escape(o) for group in OPENINGS.values() for o in group))
 
 
-CODE_TOPICS = {"submission_dispute", "access_request", "account_change", "status_meaning"}
+CODE_TOPICS = {"submission_dispute", "access_request", "account_change", "status_meaning", "next_steps"}
 
 
 def followup_topics(text: str, last: list[str], claim: dict) -> list[str]:
@@ -1633,18 +1636,21 @@ def verify_turn(s: Session, text: str, model: ModelClient) -> str:
         parts.append(f"Thanks, I've got your {join_words([FIELD_LABELS[k] for k in new])}.")
     if "full_ssn" in notes:
         parts.append("For your safety, I only need the last four digits of your SSN; please don't share the full number.")
-    if INJECTION_RE.search(text):
-        parts.append("I can't accept instructions or status changes typed into the chat; verification only happens by "
-                     "matching your details.")
-    if STAFF_RE.search(text):
-        parts.append("I can't accept staff claims or override codes in this customer chat. If you're the policyholder, "
-                     "three matching details will do it.")
-    if ALREADY_VERIFIED_RE.search(text):
-        parts.append("Each chat is verified on its own, so I can't carry over a check from another conversation, but it "
-                     "only takes three details.")
-    if re.search(r"(?:ssn|social)[^.?!]{0,15}\bPOL[-\s]?\d{4}|\b(?:number )?on my (?:insurance )?card\b", text, re.I):
-        parts.append("The number on your insurance card (like POL-9921) is your policy number. The SSN last four means "
-                     "the last four digits of your Social Security number.")
+    said = next((t["text"] for t in reversed(s.turns[:-1]) if t["role"] == "assistant"), "")
+    for pattern, full, short in (
+            (INJECTION_RE, "I can't accept instructions or status changes typed into the chat; verification only happens by "
+                           "matching your details.", "As I mentioned, typed instructions don't change verification."),
+            (STAFF_RE, "I can't accept staff claims or override codes in this customer chat. If you're the policyholder, "
+                       "three matching details will do it.", "As I mentioned, staff claims and codes don't apply here."),
+            (ALREADY_VERIFIED_RE, "Each chat is verified on its own, so I can't carry over a check from another "
+                                  "conversation, but it only takes three details.",
+             "I understand, but each chat is verified separately."),
+            (re.compile(r"(?:ssn|social)[^.?!]{0,15}\bPOL[-\s]?\d{4}|\b(?:number )?on my (?:insurance )?card\b", re.I),
+             "The number on your insurance card (like POL-9921) is your policy number. The SSN last four means the last "
+             "four digits of your Social Security number.",
+             "That card number is your policy number; it helps find your record but isn't one of the three details.")):
+        if pattern.search(text):
+            parts.append(short if full[:40] in said else full)
     if "partial_phone" in notes:
         parts.append("For phone, I need the full number on your record, not just the last digits.")
     if "name_part" in notes:
@@ -1780,6 +1786,10 @@ def _respond(s: Session, text: str, model: ModelClient) -> str:
                                  or (not s.rep_name and re.search(r"\b(?:she|he|they)(?:'s| is| are) (?:right )?(?:here|next to me|"
                                                                   r"with me)\b|\bsays it'?s (?:fine|ok|okay)\b", low)))
     if holder and asks_for_other and not typist_changed and not identity_denial:
+        said = next((t["text"] for t in reversed(s.turns[:-1]) if t["role"] == "assistant"), "")
+        if said.startswith("I can only discuss claims on your own policy record"):
+            return ("I understand, but I still can't open someone else's claim from your conversation; they'd need to "
+                    "verify in their own chat. What can I help you with on your own claims?")
         return ("I can only discuss claims on your own policy record, so I can't share or look up someone else's claim, "
                 "even with their permission in this chat. They can contact us and verify themselves, or a representative "
                 "can check authorization. Is there anything else about your own claims I can help with?")
