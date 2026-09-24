@@ -25,6 +25,7 @@ HOLDERS = fixture("policyholders.json")
 CLAIMS = fixture("claims.json")
 REPS = fixture("representatives.json")
 GUIDE = fixture("required_document_guideline.json")
+CONSENT = fixture("consent_scenarios.json")
 PII = ("name", "dob", "phone", "email", "id_last4")
 PHASES = ("VERIFY_ID", "RESOLVE_INTENT", "PROCESS_CASE", "POST_PROCESS")
 FIELD_LABELS = {"name": "full name", "dob": "date of birth", "phone": "phone number",
@@ -114,6 +115,13 @@ class Session:
     refusal_count: int = 0
     refused_fields: list[str] = field(default_factory=list)
     name_parts: dict[str, str] = field(default_factory=dict)
+    # Authorized representative flow: listed rep + policyholder's 3 PII + policyholder consent.
+    rep_name: str = ""
+    rep_party: str = ""
+    awaiting_rep_name: bool = False
+    consent_status: str = ""
+    consent_polls: int = 0
+    consent_scenario: str = field(default_factory=lambda: os.getenv("CONSENT_SCENARIO", "default"))
     verify_failures: int = 0
     failed_snapshot: str = ""
     hint_acknowledged: bool = False
@@ -137,6 +145,8 @@ class Session:
             "collected_fields": sorted(self.fields) if not verified else [],
             "memory_saved": bool(self.case_hint or self.intent_hint),
             "memory_tags": memory_tags(self),
+            "representative": self.rep_name if verified or self.consent_status else "",
+            "consent_status": self.consent_status,
             "claim": next((safe_claim(c) for c in CLAIMS if verified and c["case_id"] == self.case_id), None),
             "human_transfer": self.human_transfer,
             "closed": self.closed,
@@ -416,7 +426,7 @@ def other_holder_named(text: str, holder: dict) -> bool:
                for h in HOLDERS for n in [h["name"], *h.get("name_aliases", [])] if norm(n) not in own)
 
 
-def different_identity(text: str, holder: dict) -> bool:
+def different_identity(text: str, holder: dict, also_allowed: tuple[str, ...] = ()) -> bool:
     low = norm(text)
     if any(x in low for x in ("call me", "call my name", "use my name")):
         return False
@@ -428,8 +438,35 @@ def different_identity(text: str, holder: dict) -> bool:
     candidate = norm(match.group(1))
     if candidate.startswith(("the ", "a ")) or candidate.split()[0] in NAME_STOP:
         return False
-    allowed = [norm(x) for x in [holder["name"], *holder.get("name_aliases", [])]]
+    allowed = [norm(x) for x in [holder["name"], *holder.get("name_aliases", []), *also_allowed] if x]
     return candidate not in allowed and candidate not in {x.split()[0] for x in allowed}
+
+
+def listed_representative(text: str, third_party_context: bool) -> dict | None:
+    """A representative from the fixture who introduces themself (or is named while speaking for someone)."""
+    for rep in REPS:
+        name = re.escape(rep["rep_name"]) + r"(?!\w)"
+        if re.search(r"\b(?:my name is|i am|i'm|this is|it's)\s+" + name, text, re.I) or (
+                third_party_context and re.search(r"(?<!\w)" + name, text, re.I)):
+            return rep
+    return None
+
+
+def relationship_ok(text: str, rep: dict) -> bool:
+    """A stated relationship must agree with the representative record (e.g. a listed son, not a husband)."""
+    low = norm(text)
+    stated = re.search(r"'s\s+(son|daughter|wife|husband|spouse|caregiver|lawyer|attorney|friend)\b"
+                       r"|\b(?:her|his|their)\s+(son|daughter|wife|husband|spouse|caregiver|lawyer|attorney|friend)\b", low)
+    if stated:
+        return (stated.group(1) or stated.group(2)) == rep["relationship"]
+    mine = re.search(r"\bmy\s+(mother|mom|mum|father|dad|wife|husband|son|daughter)\b", low)
+    if mine:
+        implied = {"mother": ("son", "daughter"), "mom": ("son", "daughter"), "mum": ("son", "daughter"),
+                   "father": ("son", "daughter"), "dad": ("son", "daughter"), "wife": ("husband", "spouse"),
+                   "husband": ("wife", "spouse"), "son": ("mother", "father", "parent"),
+                   "daughter": ("mother", "father", "parent")}[mine.group(1)]
+        return rep["relationship"] in implied
+    return True
 
 
 def representative_self_intro(text: str) -> bool:
@@ -597,11 +634,11 @@ def resolve(s: Session, text: str, model: ModelClient, remembered: bool = False)
             s.pending_question = text
         if not candidates:
             s.candidate_ids = [c["case_id"] for c in own]
-            return ("I don't see a claim matching that description on your policy. Here is what I can see: "
+            return ("I don't see a claim matching that description on the policy. Here is what I can see: "
                     + claim_list(own) + ". Which one would you like to discuss?")
         s.candidate_ids = [c["case_id"] for c in candidates]
         lead = f"I see {len(candidates)} claims that could match: " if len(candidates) < len(own) else \
-            f"I see {len(candidates)} claims on your policy: "
+            f"I see {len(candidates)} claims on the policy: "
         return lead + claim_list(candidates) + ". Which one would you like to discuss?"
     select_case(s, selected)
     s.pending_question = ""
@@ -609,7 +646,8 @@ def resolve(s: Session, text: str, model: ModelClient, remembered: bool = False)
         answer = status_sentence(selected)
     else:
         answer, _ = case_response(s, selected, source, model)
-    intro = (f"I used what you mentioned earlier to find {selected['case_id']}, your {selected['case_type']} claim "
+    intro = (f"I used what you mentioned earlier to find {selected['case_id']}, "
+             f"{'her' if s.rep_name else 'your'} {selected['case_type']} claim "
              f"filed {fmt_date(selected['created_at'])}. " if remembered else f"I found {selected['case_id']}. ")
     return intro + answer + " What else would you like to know?"
 
@@ -921,6 +959,10 @@ def summary(session: Session) -> str:
     claims = [next(c for c in CLAIMS if c["case_id"] == cid) for cid in case_ids if cid]
     title = claims[0]["case_id"] if len(claims) == 1 else "multiple claims"
     lines = [f"Conversation summary for {title}"]
+    if session.rep_name:
+        rep = next(r for r in REPS if r["rep_name"] == session.rep_name)
+        lines.append(f"This conversation was with {rep['rep_name']}, listed as the policyholder's {rep['relationship']}, "
+                     "after the policyholder's details matched and the policyholder approved access.")
     topics = [TOPIC_LABELS[t] for t in session.topics_discussed if t in TOPIC_LABELS]
     if not topics:
         conversation = " ".join(turn["text"].lower() for turn in session.turns if turn["role"] == "user")
@@ -1048,12 +1090,111 @@ def held_details(s: Session) -> str:
     return join_words([FIELD_LABELS[k] for k in PII if k in s.fields])
 
 
+def extract_rep_fields(text: str, s: Session) -> list[str]:
+    """In the representative flow every identity field belongs to the policyholder, never to the caller."""
+    notes = extract_fields(text, s)
+    if norm(s.fields.get("name", "")) in {norm(r["rep_name"]) for r in REPS}:
+        del s.fields["name"]
+    for holder in HOLDERS:
+        for name in [holder["name"], *holder.get("name_aliases", [])]:
+            if re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", text, re.I):
+                s.fields["name"] = name
+    return notes
+
+
+def consent_poll(s: Session) -> tuple[str, bool]:
+    """Advance the simulated consent record; returns (status, sequence_exhausted)."""
+    sequence = CONSENT.get(s.consent_scenario, CONSENT["default"])["status_sequence"]
+    status = sequence[min(s.consent_polls, len(sequence) - 1)]
+    s.consent_polls += 1
+    return status, s.consent_polls >= len(sequence)
+
+
+def representative_turn(s: Session, text: str, model: ModelClient, new_rep: bool = False) -> str:
+    low = norm(text)
+    first = s.rep_name.split()[0]
+    lead = opening(s, emotion_of(text))
+    why = ("Claim records hold the policyholder's private health and payment information, so a representative needs "
+           "both a match on her details and her own approval before I share anything. ")
+    asked_why = re.search(r"\bwhy\b", low) and re.search(r"consent|permission|approv|authoriz|wait|need", low)
+    if s.consent_status == "pending":
+        status, exhausted = consent_poll(s)
+        if status == "approved":
+            return approve_representative(s, text, model)
+        if exhausted:
+            s.consent_status = "timeout"
+            return transfer(s, lead + (why if asked_why else "") + "The policyholder hasn't approved the request yet, "
+                            "so I still can't share claim details. I've marked this for a human representative who can "
+                            "follow up on the authorization with you.")
+        return (lead + (why if asked_why else "") + "The consent request is still pending, so I can't share claim details "
+                "yet. You can check again in a moment, or ask for a human representative.")
+    before = dict(s.fields)
+    notes = extract_rep_fields(text, s)
+    new = [k for k in PII if k in s.fields and before.get(k) != s.fields[k]]
+    detect_hint(text, s)
+    holder = verified_holder(s)
+    if holder and holder["party_id"] != s.rep_party:
+        return transfer(s, "Those details belong to a policyholder you aren't listed for, so I can't continue. I've marked "
+                        "this for a human representative who can check authorization.")
+    if holder:
+        s.consent_status, _ = consent_poll(s)
+        if s.consent_status == "approved":
+            return approve_representative(s, text, model)
+        return (lead + f"Thank you, {first}. Those details match the policy record, and you're listed as the "
+                f"policyholder's {next(r['relationship'] for r in REPS if r['rep_name'] == s.rep_name)}. " + why +
+                "I've requested the policyholder's consent through the contact on her record (a simulated consent check "
+                "in this demo). It's pending right now; send any message to check again.")
+    if len(s.fields) >= 3:
+        s.verify_failures += 1
+        if s.verify_failures >= MAX_VERIFY_FAILURES:
+            return transfer(s, "For security, I can't keep checking details after several attempts that didn't match. "
+                            "I've marked this for a human representative.")
+        return (lead + "Those details don't match the policyholder's record together, so I can't continue yet. If "
+                "something was mistyped, send the corrected value, or ask for a human representative.")
+    parts = [lead.strip(), f"Thank you, {first}, I see you listed as an authorized representative." if new_rep else "",
+             f"I've got the policyholder's {join_words([FIELD_LABELS[k] for k in new])}." if new else ""]
+    if asked_why:
+        parts.append(why)
+    if "full_ssn" in notes:
+        parts.append("Only the last four digits of the SSN are needed; please don't share the full number.")
+    parts.append("To continue, I need three matching details for the policyholder, then the policyholder's consent. "
+                 + ask_for_details(s).replace("any of your", "any of the policyholder's"))
+    return " ".join(x for x in parts if x)
+
+
+def approve_representative(s: Session, text: str, model: ModelClient) -> str:
+    holder = next(h for h in HOLDERS if h["party_id"] == s.rep_party)
+    s.consent_status = "approved"
+    s.holder_id = holder["party_id"]
+    s.phase = "RESOLVE_INTENT"
+    s.refusal_count = 0
+    note = (f"Good news: {holder['name']} approved your access (simulated consent record). Thank you, "
+            f"{s.rep_name.split()[0]}; I can help with her claims now. ")
+    if s.case_hint or s.intent_hint:
+        return note + resolve(s, text, model, remembered=True)
+    return note + "Which of her claims can I help with?"
+
+
 def verify_turn(s: Session, text: str, model: ModelClient) -> str:
     low = norm(text)
-    if third_party_declaration(text) or representative_self_intro(text):
-        return transfer(s, empathy(text) + "Thanks for letting me know. I can't confirm a third party's authority to "
-                        "access the policyholder's claim here, so I've marked this for a human representative who "
-                        "can check authorization safely.")
+    third = third_party_declaration(text)
+    if not s.rep_name and (third or s.awaiting_rep_name or representative_self_intro(text)):
+        rep = listed_representative(text, third or s.awaiting_rep_name)
+        if not rep or not relationship_ok(text, rep):
+            if s.awaiting_rep_name or rep:
+                return transfer(s, empathy(text) + "Thanks. I don't see you listed as an authorized representative for "
+                                "this policyholder, so I can't share claim details here. I've marked this for a human "
+                                "representative who can check authorization safely.")
+            s.awaiting_rep_name = True
+            extract_rep_fields(text, s)
+            detect_hint(text, s)
+            return (empathy(text) + "Thanks for letting me know. I can only help someone other than the policyholder if "
+                    "they are listed as an authorized representative on the policy, and only with the policyholder's "
+                    "consent. What is your full name?")
+        s.rep_name, s.rep_party, s.awaiting_rep_name = rep["rep_name"], rep["buyer_party_id"], False
+        return representative_turn(s, text, model, new_rep=True)
+    if s.rep_name:
+        return representative_turn(s, text, model)
     before = dict(s.fields)
     notes = extract_fields(text, s)
     new = [k for k in PII if k in s.fields and before.get(k) != s.fields[k]]
@@ -1222,7 +1363,10 @@ def _respond(s: Session, text: str, model: ModelClient) -> str:
         re.search(r"\b(?:i am|i'm)\s+(?:not the (?:policyholder|claimant)|a different person)\b", low)
         or re.search(r"\b(?:i am|i'm)\s+not\s+" + re.escape(holder["name"].lower()) + r"\b", low)
     ))
-    if holder and (caller_is_third_party(text) or identity_denial or different_identity(text, holder)):
+    if holder and s.rep_name:
+        identity_denial = False
+    if holder and ((caller_is_third_party(text) and not s.rep_name) or identity_denial
+                   or different_identity(text, holder, (s.rep_name,))):
         s.human_transfer = True
         s.phase = "VERIFY_ID"
         s.holder_id = ""
@@ -1234,11 +1378,12 @@ def _respond(s: Session, text: str, model: ModelClient) -> str:
         s.policy_hint = s.case_hint = s.intent_hint = s.pending_question = ""
         s.preferred_name = ""
         s.preferred_name_pending = False
+        s.rep_name = s.rep_party = s.consent_status = ""
         s.email_preview = ""
         s.turns.clear()
         return ("Thanks for clarifying. I can't continue discussing the verified policyholder's claim "
                 "with a different caller. A representative can check your authorization safely.")
-    if holder and (about_other_person(text) or other_holder_named(text, holder)):
+    if holder and ((about_other_person(text) and not s.rep_name) or other_holder_named(text, holder)):
         return ("I can only discuss claims on your own policy record, so I can't share or look up someone else's claim. "
                 "The other policyholder can contact us directly, or a representative can check authorization. "
                 "Is there anything else about your own claims I can help with?")

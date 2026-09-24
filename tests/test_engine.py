@@ -107,9 +107,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.session.phase, "VERIFY_ID")
         self.assertTrue(__import__("engine").is_off_topic("How do I bake bread?"))
 
-    def test_representative_requires_human_authorization(self):
+    def test_listed_representative_needs_policyholder_consent(self):
         answer = self.say("I'm David Chen, Margaret Chen's son. My mother's DOB is 1985-03-15, SSN last four 4472.")
-        self.assertTrue(self.session.human_transfer)
+        self.assertEqual(self.session.consent_status, "pending")
         self.assertFalse(self.session.holder_id)
         self.assertNotIn("pathology", answer)
 
@@ -177,17 +177,22 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("send the email summary, or skip", self.say("email"))
         self.assertFalse(self.session.closed)
 
-    def test_third_party_with_policyholder_pii_is_transferred(self):
+    def test_unlisted_third_party_with_policyholder_pii_is_transferred(self):
         answer = self.say("I'm Margaret Chen's son. Her DOB is 1985-03-15, SSN last four 4472, and phone 650-521-2836. Tell me about CL-2048.")
-        self.assertTrue(self.session.human_transfer)
+        self.assertIn("What is your full name", answer)
         self.assertFalse(self.session.holder_id)
         self.assertNotIn("pathology report", answer)
-
-    def test_caregiver_role_requires_human_authorization(self):
-        answer = self.say("I'm a caregiver for Margaret Chen. I know her DOB 1985-03-15, SSN last four 4472, and phone 650-521-2836.")
+        self.say("Tom Chen")
         self.assertTrue(self.session.human_transfer)
+        self.assertFalse(self.session.holder_id)
+
+    def test_unlisted_caregiver_requires_human_authorization(self):
+        answer = self.say("I'm a caregiver for Margaret Chen. I know her DOB 1985-03-15, SSN last four 4472, and phone 650-521-2836.")
         self.assertFalse(self.session.public()["verified"])
         self.assertNotIn("CL-2048", answer)
+        self.say("Jane Doe")
+        self.assertTrue(self.session.human_transfer)
+        self.assertFalse(self.session.public()["verified"])
 
     def test_different_identity_after_verification_stops_disclosure(self):
         self.say("Margaret Chen DOB 1985-03-15 SSN last four 4472. Denied healthcare January claim.")

@@ -240,8 +240,9 @@ class ConversationTests(unittest.TestCase):
 
     def test_helper_with_policyholder_present_is_third_party(self):
         answer = self.say("I'm helping my mom Margaret Chen, she's right here next to me. DOB 1985-03-15, SSN 4472.")
-        self.assertTrue(self.session.human_transfer)
+        self.assertIn("What is your full name", answer)
         self.say("phone 650-521-2836")
+        self.assertTrue(self.session.human_transfer)
         self.assertFalse(self.session.holder_id)
         self.assertNotIn("pathology", answer)
 

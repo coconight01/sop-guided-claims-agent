@@ -69,8 +69,10 @@ function render(state) {
     li.append(node("span", "", labels[i]));
     return li;
   }));
-  $("phasePill").textContent = state.human_transfer ? "Representative requested" : ["Identity check", "Finding your claim", "Claim review", "Summary choice"][Math.max(phaseIndex, 0)];
-  $("identitySignal").textContent = state.verified ? "Verified" : `${Math.min(state.collected_fields.length, 3)} of 3 details shared`;
+  $("phasePill").textContent = state.human_transfer ? "Representative requested" : state.consent_status === "pending" ? "Consent pending" : ["Identity check", "Finding your claim", "Claim review", "Summary choice"][Math.max(phaseIndex, 0)];
+  $("identitySignal").textContent = state.consent_status === "pending" ? "Waiting for policyholder consent"
+    : state.verified ? (state.representative ? `Verified representative (${state.representative})` : "Verified")
+    : `${Math.min(state.collected_fields.length, 3)} of 3 details shared`;
   chips("identityChips", (state.verified ? state.verified_fields : state.collected_fields).map(key => fieldLabels[key] || key));
   $("memorySignal").textContent = state.claim ? state.claim.case_id : state.memory_saved ? "Noted for after verification" : "Waiting for details";
   chips("memoryChips", state.claim ? [] : state.memory_tags || []);
