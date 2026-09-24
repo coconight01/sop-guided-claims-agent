@@ -760,6 +760,15 @@ class ConversationTests(unittest.TestCase):
         self.assertIn("can't accept staff claims", first)
         self.assertIn("As I mentioned", second)
 
+    def test_choosing_a_claim_without_a_question_gives_an_overview(self):
+        self.say(VERIFY)
+        self.model.enabled = True
+        self.model._ask = lambda *a, **k: '{"scope":"claim","topics":["clarify"],"emotion":"neutral"}'
+        answer = self.say("idk which claim, the one they said no to")
+        self.assertEqual(self.session.case_id, "CL-2048")
+        self.assertIn("denied because", answer)
+        self.assertNotIn("reliably", answer)
+
     # ---- Model phrasing is accepted only when grounded
 
     def model_reply(self, reply, topics=("denial_reason",)):

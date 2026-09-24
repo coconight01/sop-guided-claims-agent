@@ -1,6 +1,6 @@
 /* GitHub Pages adapter: the original Python engine runs in WebAssembly.
    No customer data or API keys are sent to a model or Goaly from this demo. */
-const ASSET_VERSION = "ef1777414d";
+const ASSET_VERSION = "c4ad0f5218";
 let pythonRuntime;
 const demoReady = (async () => {
   if (typeof loadPyodide !== "function") throw new Error("Python demo runtime could not load");

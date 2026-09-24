@@ -758,8 +758,10 @@ def resolve(s: Session, text: str, model: ModelClient, remembered: bool = False)
         return lead + claim_list(candidates) + ". Which one would you like to discuss?"
     select_case(s, selected)
     s.pending_question = ""
-    if local_topics(source) == ["clarify"] and (remembered or not model.enabled):
-        answer = status_sentence(selected)
+    if local_topics(source) == ["clarify"]:
+        # Choosing a claim without a question gets a short overview, never a dead end.
+        answer = (f"{selected['case_id']} was denied because {selected['denial_reason']}." if selected.get("denial_reason")
+                  else status_sentence(selected))
     else:
         answer, _ = case_response(s, selected, source, model)
     intro = (f"I used what you mentioned earlier to find {selected['case_id']}, "
