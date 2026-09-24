@@ -421,6 +421,36 @@ class ConversationTests(unittest.TestCase):
         self.assertTrue(self.session.closed)
         self.assertNotIn("CL-2048", self.say("my denied claim"))
 
+    # ---- Transcript reported from the hosted demo
+
+    def test_upset_caller_with_short_follow_ups(self):
+        self.say("I'm the policyholder. My name is Margaret Chen, policy POL-9921. I'm calling about my denied "
+                 "healthcare claim from January. DOB is 1985-03-15, SSN last four is 4472.")
+        upset = self.say("??? why! i NEED  my MONEY! the doctor didnt give me the report! but i have the payment info!")
+        self.assertIn("doesn't replace", upset)
+        self.assertIn("representative", upset)
+        self.assertEqual(upset.count("denied because"), 0)
+        how = self.say("how...")
+        self.assertIn("replacement copy", how)
+        self.assertNotIn("cut off", how)
+        self.assertIn("review time", self.say("and then?"))
+        self.assertIn("denied because", self.say("why was it denied again?"))
+
+    def test_short_follow_up_skips_the_model(self):
+        self.open_denied_claim()
+        self.say("I don't have the pathology report")
+        calls = []
+        self.model.enabled = True
+        self.model._ask = lambda *a, **k: calls.append(a) or ""
+        self.assertIn("replacement copy", self.say("how?"))
+        self.assertEqual(calls, [])
+
+    def test_passed_deadline_is_not_repeated_back_to_back(self):
+        self.open_denied_claim()
+        self.say("what should I do next?")
+        self.assertNotIn("deadline", self.say("ok what do I do then, next steps?"))
+        self.assertIn("deadline", self.say("can I still appeal?"))
+
     # ---- Model phrasing is accepted only when grounded
 
     def model_reply(self, reply, topics=("denial_reason",)):

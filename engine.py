@@ -87,6 +87,7 @@ TOPIC_LABELS = {
     "appeal": "the appeal deadline", "payment": "payment amounts", "alternatives": "alternatives for hard-to-get documents",
     "receipt_check": "whether uploads were received", "document_detail": "document requirements",
     "next_steps": "next steps", "outcome": "what to expect from the review", "contact": "how to reach support",
+    "how_to_get_documents": "how to get the missing documents", "other_documents": "other records you have",
 }
 
 
@@ -115,6 +116,8 @@ class Session:
     refusal_count: int = 0
     refused_fields: list[str] = field(default_factory=list)
     name_parts: dict[str, str] = field(default_factory=dict)
+    last_topics: list[str] = field(default_factory=list)
+    human_offered: bool = False
     # Authorized representative flow: listed rep + policyholder's 3 PII + policyholder consent.
     rep_name: str = ""
     rep_party: str = ""
@@ -699,6 +702,11 @@ def local_topics(text: str) -> list[str]:
         topics.insert(0, "exception")
     if re.search(r"\bwhat(?:'s| is| even is| exactly is)\s+(?:a|an|the)\s+(?:pathology|office note|diagnosis|repair estimate|report|note)", low):
         topics.insert(0, "document_detail")
+    if re.search(r"\b(?:i have|i've got|i got|but i have|i do have|i only have)\b[^.?!]{0,40}\b(?:payment|receipt|bill|invoice|"
+                 r"statement|proof)\b", low):
+        topics = ["other_documents"] + [t for t in topics if t not in ("payment", "other_documents")]
+    if re.search(r"\bhow (?:do|can|should) i (?:get|obtain|request|ask for)\b|\bwhere (?:do|can) i get\b", low):
+        topics.insert(0, "how_to_get_documents")
     if "alternatives" in topics and "documents" in topics:
         topics.remove("documents")
     return topics[:3] or ["clarify"]
@@ -801,6 +809,15 @@ def topic_answer(claim: dict, topics: list[str], text: str = "") -> str:
                 parts.append(f"The record doesn't list anything you need to send for {cid}; it is still in progress.")
             else:
                 parts.append(f"{cid} is {claim['status']}, and the record shows nothing outstanding.")
+        elif topic == "how_to_get_documents" and docs:
+            parts.append(f"Contact the hospital, lab, or treating provider and ask for a replacement copy of "
+                         f"{doc_phrase(claim)}, or ask them to send it directly; if the clinic can fax or upload the office "
+                         "note itself, that is often the cleanest option. Once you have the files, upload them through the "
+                         "member portal or claim upload link. If online upload isn't possible, support can arrange fax or mail.")
+        elif topic == "other_documents" and docs:
+            parts.append(f"You can include what you have, but it doesn't replace {doc_phrase(claim)}, which the record "
+                         "lists as needed for the review. If one of them is still pending, submit what you have with a "
+                         "short note explaining what's missing.")
         elif topic == "exception":
             parts.append("I can't waive or change the claim requirements from this chat. " + (
                 f"The record lists {doc_phrase(claim)} as needed; if you can't get them, a representative can review "
@@ -829,11 +846,14 @@ def topic_answer(claim: dict, topics: list[str], text: str = "") -> str:
 
 def case_facts(claim: dict) -> dict:
     """The only claim information a model may phrase: no identity fields and no other claims."""
-    facts = {k: claim[k] for k in ("case_id", "case_type", "created_at", "status", "summary") if k in claim}
+    facts = {k: claim[k] for k in ("case_id", "case_type", "status", "summary") if k in claim}
+    facts["filed_on"] = fmt_date(claim["created_at"])
     facts["payment"] = {k: claim[k] for k in ("net_pay", "expected_reimbursement_amount", "allowed_max_amount")}
-    for key in ("denial_reason", "documents_needed", "appeal_deadline"):
+    for key in ("denial_reason", "documents_needed"):
         if claim.get(key):
             facts[key] = claim[key]
+    if claim.get("appeal_deadline"):
+        facts["appeal_deadline"] = fmt_date(claim["appeal_deadline"])
     if claim.get("appeal_deadline"):
         facts["appeal_deadline_has_passed"] = deadline_passed(claim)
     if claim.get("documents_needed"):
@@ -895,12 +915,56 @@ def grounded(reply: str, claim: dict, topics: list[str], facts: dict) -> bool:
     return True
 
 
+def without_repeats(body: str, previous: str, keep_deadline: bool) -> str:
+    """Drop sentences the caller just heard (same fact, or the deadline again) unless nothing else is left."""
+    heard = {re.sub(r"\W+", " ", x.lower()).strip() for x in re.split(r"(?<=[.!?])\s+", previous)}
+    heard_deadline = "deadline" in previous.lower()
+    sentences = re.split(r"(?<=[.!?])\s+", body)
+    kept = [x for x in sentences
+            if re.sub(r"\W+", " ", x.lower()).strip() not in heard
+            and not (heard_deadline and not keep_deadline and re.search(r"deadline|late appeal", x.lower()))
+            and not (re.search(r"denied because", x) and re.search(r"denied because", previous))]
+    kept = [x for i, x in enumerate(kept) if not any(
+        # "the claims team needs the pathology report..." after "doesn't replace the pathology report..."
+        re.search(r"needs the ", x) and "doesn't replace" in y for y in kept[:i])]
+    if any(not OPENING_RE.fullmatch(x.strip()) for x in kept):
+        return " ".join(kept)
+    # The same question twice: repeat the answer, but still not the deadline the caller just heard.
+    fresh = [x for x in sentences if keep_deadline or not (heard_deadline and re.search(r"deadline|late appeal", x.lower()))]
+    return " ".join(fresh) if any(not OPENING_RE.fullmatch(x.strip()) for x in fresh) else body
+
+
+OPENING_RE = re.compile("|".join(re.escape(o) for group in OPENINGS.values() for o in group))
+
+
+def followup_topics(text: str, last: list[str], claim: dict) -> list[str]:
+    """A bare 'how...' / 'and then?' continues the previous answer instead of asking the caller to repeat."""
+    low = norm(text).strip(" .?!\u2026")
+    if not last or len(low.split()) > 4 or local_topics(text) != ["clarify"]:
+        return []
+    if not re.fullmatch(r"(?:how|how so|how do i|how do i do that|how\.*|and|and then|then what|what then|so|ok and|"
+                        r"what now|what next|next|then)", low):
+        return []
+    if not claim.get("documents_needed"):
+        return ["next_steps"]
+    if {"alternatives", "other_documents", "denial_reason", "documents"} & set(last):
+        return ["how_to_get_documents"]
+    if "how_to_get_documents" in last:
+        return ["review_timing"]
+    if {"next_steps", "document_detail"} & set(last):
+        return ["submission_method"]
+    if "submission_method" in last:
+        return ["review_timing"]
+    return ["next_steps"]
+
+
 def case_response(session: Session, claim: dict, text: str, model: ModelClient) -> tuple[str, bool]:
     previous = next((t["text"] for t in reversed(session.turns) if t["role"] == "assistant"), "")
     facts = case_facts(claim)
-    route = model.analyze_case(model_safe_text(text, (session.preferred_name,), session),
+    followup = followup_topics(text, session.last_topics, claim)
+    route = {} if followup else model.analyze_case(model_safe_text(text, (session.preferred_name,), session),
                                model_safe_text(previous, (session.preferred_name,), session), facts) if model.enabled else {}
-    fallback = local_topics(text)
+    fallback = followup or local_topics(text)
     # A clear statement that files were already sent takes priority over a generic model label.
     if fallback == ["submission_dispute"]:
         topics, unrelated, from_model = fallback, False, "submission_dispute" in route.get("topics", [])
@@ -918,8 +982,14 @@ def case_response(session: Session, claim: dict, text: str, model: ModelClient) 
     lead = opening(session, emotion)
     session.intent = topics[0]
     session.topics_discussed = list(dict.fromkeys([*session.topics_discussed, *(t for t in topics if t != "clarify")]))
+    session.last_topics = topics
     reply = route.get("reply", "")
     body = reply if from_model and reply and grounded(reply, claim, topics, facts) else lead + topic_answer(claim, topics, text)
+    body = without_repeats(body, previous, keep_deadline="appeal" in topics)
+    if emotion == "frustrated" and not session.human_offered and (
+            session.emotion_streak >= 1 or shouting(text) or text.count("!") >= 3):
+        session.human_offered = True
+        body += " If you'd rather talk this through with a person, just say \"representative\" and I'll hand this over."
     if session.preferred_name_pending:
         body = f"{session.preferred_name}, " + body[:1].lower() + body[1:] if body[:2] != "I " else f"{session.preferred_name}, " + body
         session.preferred_name_pending = False
