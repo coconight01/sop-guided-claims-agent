@@ -568,6 +568,53 @@ class ConversationTests(unittest.TestCase):
         self.assertNotIn("see: .", answer)
         self.assertIn("don't see any claims", self.say("the denied one"))
 
+    # ---- Third persona round
+
+    def test_everything_in_one_message_with_unlabeled_values(self):
+        answer = self.say("margaret chen 1985-03-15 4472 why was my claim denied and how long do i have and can you email me")
+        self.assertTrue(self.session.holder_id)
+        self.assertEqual(self.session.case_id, "CL-2048")
+        self.assertIn("denied because", answer)
+        self.assertIn("March 18, 2026", answer)
+
+    def test_unlabeled_claim_date_is_not_a_birth_date(self):
+        self.say("Margaret Chen, my claim filed 2026-01-12")
+        self.assertNotIn("dob", self.session.fields)
+
+    def test_stalled_asks_do_not_repeat_verbatim(self):
+        self.say("margaret chen")
+        replies = [self.say(t) for t in ("which claim is that", "and my car one?", "how much for the car", "hmm")]
+        self.assertEqual(len(set(replies[1:])), len(replies[1:]) - (replies[2] == replies[3]))
+        self.assertIn("Still", replies[-1])
+
+    def test_casual_thanks_and_skip_close_the_case(self):
+        self.open_denied_claim()
+        self.assertIn("email summary", self.say("thank u"))
+        self.assertIn("won't send", self.say("skip"))
+
+    def test_no_claims_second_turn_points_to_a_person(self):
+        self.say("I'm Ava Lopez, DOB 1990-08-21, SSN last four 9180")
+        self.say("where's my claim? I sent it last week")
+        self.assertIn("best next step", self.say("so what do I do"))
+
+    def test_model_clarify_label_cannot_hide_a_known_topic(self):
+        self.open_denied_claim()
+        self.model.enabled = True
+        self.model._ask = lambda *a, **k: '{"scope":"claim","topics":["clarify"],"emotion":"neutral","reply":"I am not sure."}'
+        self.assertIn("specimen", self.say("what does pathology mean"))
+
+    def test_amount_question_needs_an_amount(self):
+        self.say(VERIFY)
+        self.say("the car one")
+        self.model_reply("Please note that we cannot confirm any future decision or payment.", topics=("outcome",))
+        self.assertIn("$3200.00", self.say("how much will they pay on that"))
+
+    def test_model_must_address_the_missing_document(self):
+        self.open_denied_claim()
+        self.model_reply("If you cannot get the full office note, ask the clinic for a visit summary.", topics=("document_detail",))
+        answer = self.say("what if I only have the office note but not the pathology report")
+        self.assertIn("pathology report is missing", answer)
+
     # ---- Model phrasing is accepted only when grounded
 
     def model_reply(self, reply, topics=("denial_reason",)):

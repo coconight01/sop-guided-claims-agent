@@ -292,6 +292,13 @@ def extract_fields(text: str, session: Session) -> list[str]:
     dob = parse_date(scrubbed[cue.end():cue.end() + 40]) if cue else ""
     if not dob and len(scrubbed.strip()) <= 32 and not re.search(r"claim|filed|since|from", low):
         dob = parse_date(scrubbed)
+    if not dob and "dob" not in session.fields:
+        for m in re.finditer(r"\b(?:(?:19|20)\d\d[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.](?:19|20)?\d\d)\b", scrubbed):
+            if not re.search(r"filed|claim|since|from|dated|\bon\s*$", scrubbed[max(0, m.start() - 20):m.start()], re.I):
+                candidate = parse_date(m.group())
+                if candidate and 1900 <= int(candidate[:4]) <= today().year - 16:
+                    dob = candidate
+                    break
     if dob and 1900 <= int(dob[:4]) <= today().year - 16:
         session.fields["dob"] = dob
     full_ssn = re.search(r"(?<!\d)\d{3}-\d{2}-(\d{4})(?!\d)", scrubbed)
@@ -304,6 +311,11 @@ def extract_fields(text: str, session: Session) -> list[str]:
         notes.append("full_ssn")
     elif ssn or bare:
         session.fields["id_last4"] = (ssn.group(1) or ssn.group(2)) if ssn else bare.group(1)
+    elif "id_last4" not in session.fields:
+        rest = PHONE_RE.sub(" ", re.sub(r"\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}", " ", low))
+        loose = [d for d in re.findall(r"(?<![\d/.:$,-])(\d{4})(?![\d/.:,-])", rest) if not re.fullmatch(r"(?:19|20)\d\d", d)]
+        if len(loose) == 1:
+            session.fields["id_last4"] = loose[0]
     policy = re.search(r"\bPOL[-\s]?(\d{4})\b", text, re.I)
     if policy:
         session.policy_hint = "POL-" + policy.group(1)
@@ -720,12 +732,14 @@ def local_topics(text: str) -> list[str]:
         topics.append("receipt_check")
     if any(x in low for x in ("how soon do i need to", "when should i submit", "when do i need to submit")):
         topics.append("submission_timing")
-    elif any(x in low for x in ("how long", "processing time", "review time", "after i submit", "once i submit", "when will i hear", "when will it")):
+    elif "how long do i have" not in low and any(x in low for x in ("how long", "processing time", "review time", "after i submit", "once i submit", "when will i hear", "when will it")):
         topics.append("review_timing")
-    if re.search(r"\b(?:appeal|deadline|too late)\b", low):
+    if re.search(r"\b(?:appeal|deadline|too late)\b|how (?:long|much time) do i have|when is it due", low):
         topics.append("appeal")
     if re.search(r"\b(?:will (?:it|they|you) (?:be )?(?:approve|approved|accept|cover|covered|pay)|chances?|overturn|get approved|be approved)\b", low):
         topics.append("outcome")
+        if "how much" in low:
+            topics.append("payment")
     elif any(x in low for x in ("paid", "payment", "reimburse", "amount", "dollar", "money", "how much", "owe", "$")):
         topics.append("payment")
     if any(x in low for x in ("don't have", "do not have", "can't get", "cannot get", "alternative", "substitute")) or re.search(
@@ -945,7 +959,7 @@ def numbers_in(text: str) -> set[float]:
     return {float(n.replace(",", "")) for n in re.findall(r"\d+(?:,\d{3})*(?:\.\d+)?", text)}
 
 
-def grounded(reply: str, claim: dict, topics: list[str], facts: dict, missing: str = "") -> bool:
+def grounded(reply: str, claim: dict, topics: list[str], facts: dict, missing: str = "", asked_amount: bool = False) -> bool:
     """Accept model wording only when every fact in it is traceable to the claim record."""
     if not 20 <= len(reply) <= 900 or re.search(r"[\[\]{}<>@*#]|https?://", reply):
         return False
@@ -984,7 +998,9 @@ def grounded(reply: str, claim: dict, topics: list[str], facts: dict, missing: s
         return False
     if "next_steps" in topics and docs and not any(doc in low for doc in docs):
         return False
-    if "alternatives" in topics and missing and missing not in low:
+    if missing and missing not in low:
+        return False
+    if asked_amount and not numbers_in(reply):
         return False
     if "payment" in topics and float(claim["net_pay"]) not in numbers_in(reply):
         return False
@@ -1004,7 +1020,8 @@ def support_prompt(claim: dict) -> str:
     return "I can explain the status or payment, or connect you with a human representative. What would help most?"
 
 
-def without_repeats(body: str, previous: str, keep_deadline: bool, deadline_heard: bool = False) -> str:
+def without_repeats(body: str, previous: str, keep_deadline: bool, deadline_heard: bool = False,
+                    asked_why: bool = False) -> str:
     """Drop sentences the caller just heard (same fact, or the deadline again) unless nothing else is left."""
     heard = {re.sub(r"\W+", " ", x.lower()).strip() for x in re.split(r"(?<=[.!?])\s+", previous)}
     heard_deadline = deadline_heard or "deadline" in previous.lower()
@@ -1012,7 +1029,7 @@ def without_repeats(body: str, previous: str, keep_deadline: bool, deadline_hear
     kept = [x for x in sentences
             if re.sub(r"\W+", " ", x.lower()).strip() not in heard
             and not (heard_deadline and not keep_deadline and re.search(r"deadline|late appeal", x.lower()))
-            and not (re.search(r"denied because", x) and re.search(r"denied because", previous))]
+            and not (not asked_why and re.search(r"denied because", x) and re.search(r"denied because", previous))]
     kept = [x for i, x in enumerate(kept) if not any(
         # "the claims team needs the pathology report..." after "doesn't replace the pathology report..."
         re.search(r"needs the ", x) and "doesn't replace" in y for y in kept[:i])]
@@ -1062,9 +1079,10 @@ def case_response(session: Session, claim: dict, text: str, model: ModelClient) 
     if fallback == ["submission_dispute"]:
         topics, unrelated, from_model = fallback, False, "submission_dispute" in route.get("topics", [])
     else:
-        topics = route.get("topics") or fallback
+        model_topics = [t for t in route.get("topics", []) if t != "clarify"]
+        topics = model_topics or fallback
         unrelated = route.get("scope") == "unrelated" and not re.search(CLAIM_WORDS, norm(text))
-        from_model = bool(route.get("topics")) and not (route.get("scope") == "unrelated")
+        from_model = bool(model_topics) and not (route.get("scope") == "unrelated")
     if unrelated:
         return "", True
     if re.search(r"\b(?:deadline|appeal)\b", norm(text)) and "appeal" not in topics:
@@ -1079,10 +1097,17 @@ def case_response(session: Session, claim: dict, text: str, model: ModelClient) 
     session.topics_discussed = list(dict.fromkeys([*session.topics_discussed, *(t for t in topics if t != "clarify")]))
     session.last_topics = topics
     reply = route.get("reply", "")
-    body = reply if from_model and reply and grounded(reply, claim, topics, facts, missing_doc(claim, text)) else lead + topic_answer(claim, topics, text)
+    accepted = from_model and reply and grounded(reply, claim, topics, facts, missing_doc(claim, text), "how much" in norm(text))
+    if not accepted and fallback != ["clarify"]:
+        # A rejected draft falls back to the record, using the topics the local rules recognized.
+        topics = fallback
+        if claim["status"] == "denied" and "denial_reason" in topics and "status" in topics:
+            topics = [topic for topic in topics if topic != "status"]
+    body = reply if accepted else lead + topic_answer(claim, topics, text)
     history = " ".join(t["text"] for t in session.turns if t["role"] == "assistant")
     body = without_repeats(body, previous, keep_deadline="appeal" in topics or bool(re.search(r"deadline|appeal", norm(text))),
-                           deadline_heard="deadline" in history.lower())
+                           deadline_heard="deadline" in history.lower(),
+                           asked_why=bool(re.search(r"\bwhy\b|\breason\b", norm(text))))
     sentences = re.split(r"(?<=[.!?])\s+", body)
     if (len(sentences) > 1 and emotion_of(text) == "neutral" and EMPATHY_LEAD.match(sentences[0])
             and EMPATHY_LEAD.match(previous)):
@@ -1198,7 +1223,8 @@ def is_closing(text: str) -> bool:
     low = norm(text)
     closing = re.search(r"\b(?:that'?s all|that is all|that'?s it|all done|i'?m done|we'?re done|no more questions|"
                         r"nothing else|goodbye|bye|thank you|thanks|appreciate it)\b", low) or re.fullmatch(
-        r"(?:no|nope|no thanks|no thank you|i'?m good|i'?m all set|all set|that'?s everything)[.! ]*", low)
+        r"(?:no|nope|no thanks|no thank you|thank u|thanks u|thx|ty|i'?m good|i'?m all set|all set|that'?s everything|skip|"
+        r"ok bye|bye bye)[.! ]*", low)
     return bool(closing) and "?" not in text and local_topics(text) == ["clarify"]
 
 
@@ -1293,7 +1319,8 @@ def representative_turn(s: Session, text: str, model: ModelClient, new_rep: bool
     if s.consent_status == "pending":
         status, exhausted = consent_poll(s)
         if status == "approved":
-            return (why if asked_why else "") + approve_representative(s, text, model)
+            return (("Because it's her private health information, she has to approve access herself. "
+                     if asked_why else "") + approve_representative(s, text, model))
         if exhausted:
             s.consent_status = "timeout"
             return transfer(s, lead + (why if asked_why else "") + "The policyholder hasn't approved the request yet, "
@@ -1462,14 +1489,21 @@ def verify_turn(s: Session, text: str, model: ModelClient) -> str:
     if "name_part" in notes:
         parts.append(f"Could you also share your {'last' if 'first' in s.name_parts else 'first'} name?")
     if local_topics(text) != ["clarify"] or re.search(r"\b(?:was it|did (?:they|you)|is it|yes or no)\b", low):
-        parts.append("I can't share or confirm any claim details until you're verified.")
+        previous = next((t["text"] for t in reversed(s.turns[:-1]) if t["role"] == "assistant"), "")
+        if "can't share or confirm" not in previous:
+            parts.append("I can't share or confirm any claim details until you're verified.")
+        else:
+            parts.append("I'll answer that as soon as you're verified.")
     if (s.case_hint or s.intent_hint) and (not s.hint_acknowledged or not had_hint):
         s.hint_acknowledged = True
         parts.append("I've noted what you're calling about, so you won't need to repeat it after verification.")
     if s.policy_hint and (not s.policy_note_given or re.search(r"\b(?:three|3) (?:details|things|pieces)\b|that'?s (?:three|3)", low)):
         s.policy_note_given = True
         parts.append("Your policy number helps me find the record, but it doesn't count toward the three details.")
-    if s.fields and s.stalled >= 2:
+    if s.fields and s.stalled >= 3:
+        parts.append(f"Still {needed_details(s).split(':')[0]} to go ({needed_details(s).split(': any of your ')[1]}), "
+                     "or say \"representative\".")
+    elif s.fields and s.stalled >= 2:
         parts.append(f"We're almost there: I just need {needed_details(s)}. If you're not sure what's on file, say "
                      "\"representative\" and a person can help.")
     elif not s.fields and s.stalled >= 2:
@@ -1608,6 +1642,10 @@ def _respond(s: Session, text: str, model: ModelClient) -> str:
         lead = opening(s, emotion_of(text))
         own = [c for c in CLAIMS if c["party_id"] == s.holder_id]
         if not own:
+            previous = next((t["text"] for t in reversed(s.turns[:-1]) if t["role"] == "assistant"), "")
+            if previous.startswith("I don't see any claims"):
+                return (lead + "Since nothing is on file, the best next step is a human representative who can check "
+                        "whether your claim was received. Just say \"representative\" and I'll hand this over.")
             return lead + NO_CLAIMS
         if re.search(r"\b(?:all|list|which|what)\b.*\bclaims\b|\bclaims do i have\b", low):
             s.candidate_ids = [c["case_id"] for c in own]

@@ -1,5 +1,18 @@
 # Northstar Claims — SOP-guided conversational agent
 
+## For reviewers
+
+**Live demo:** <https://sop-guided-claims-agent.onrender.com/> (free hosting: the first load after idle can take about a minute).
+
+Try these in one conversation, in order:
+
+1. `I'm the policyholder. My name is Margaret Chen, policy POL-9921. I'm calling about my denied healthcare claim from January. DOB is 1985-03-15, SSN last four is 4472.` → verified with three fields; the remembered January denial opens `CL-2048` without asking again.
+2. `why! i NEED my MONEY! the doctor didnt give me the report!`, then `how...` → empathy, a concrete next step, an offer of a person, and a follow-up that continues the topic.
+3. `What is RL?` → polite scope boundary (three times → human handoff).
+4. `That's all` → email summary offer; `send it` or `skip`.
+
+In a new conversation: `I already told you who I am. This is ridiculous. Just tell me why my claim was denied.` (bonus: frustration, no disclosure), or `I'm David Chen, Margaret Chen's son...` (listed representative + policyholder consent). [ASSESSMENT.md](ASSESSMENT.md) maps every requirement to a prompt and its tests.
+
 A dependency-free Python web app with a responsive test UI. The supplied starter fixtures are retained under `apps/insurance_claims/fixtures` and are the demo's only claim records.
 
 **Public workflow preview:** <https://coconight01.github.io/sop-guided-claims-agent/>. **Model-backed demo:** <https://sop-guided-claims-agent.onrender.com/>. The GitHub Pages version runs the same Python SOP engine in the browser via Pyodide, using only synthetic starter fixtures. It makes no model API calls and does not accept an API key. Because static-site data can be inspected by visitors, this is a workflow demonstration, not a real identity or privacy boundary. The Python server below enforces the gate before returning claim data and can use a model token stored on the server.
@@ -87,7 +100,7 @@ See [Assessment verification](ASSESSMENT.md) for prompt-by-prompt checks, author
 python -m unittest discover -s tests -v
 ```
 
-The test suite (147 tests) covers the supplied Margaret scenario, early memory, three-field gating, wrong fields and lockout, natural date and name formats, aliases, refusal of individual fields, emotional recovery, escalation, representative authorization, claim narrowing and switching, grounded follow-ups, model-draft rejection and redaction, recipient restrictions, casual consent, session isolation, skip, and cross-policy access. `tests/test_conversation.py` holds the natural-language cases, including every adversarial prompt that exposed a problem on the hosted demo.
+The test suite (155 tests) covers the supplied Margaret scenario, early memory, three-field gating, wrong fields and lockout, natural date and name formats, aliases, refusal of individual fields, emotional recovery, escalation, representative authorization, claim narrowing and switching, grounded follow-ups, model-draft rejection and redaction, recipient restrictions, casual consent, session isolation, skip, and cross-policy access. `tests/test_conversation.py` holds the natural-language cases, including every adversarial prompt that exposed a problem on the hosted demo.
 
 ## Rebuild the public demo
 
